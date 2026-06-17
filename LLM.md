@@ -1,8 +1,10 @@
 # LLM / AI tooling provenance
 
-This file records, openly and on the record, that automated coding
-assistants — large language models, principally Anthropic's Claude (via
-Claude Code) — were used as **tools** during the development of libhex9.
+This file records, openly and on the record, that large language models, principally 
+* Anthropic's Claude (via Claude Code)
+* Google's Gemini
+* OpenAI's ChatGPT
+were used as **assistants** and **tools** during the development of hex9 and libhex9.
 
 It exists so the role of that tooling is documented honestly while keeping
 it cleanly separated from authorship, copyright, and accountability.
