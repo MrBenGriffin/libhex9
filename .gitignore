@@ -1,0 +1,35 @@
+*~
+*.a
+*.la
+.libs
+*.lo
+*.exe
+*.dll
+*.res
+*.marks
+*.swp
+*.gcda
+*.gcno
+build/
+config
+config.log
+config.guess
+config.sub
+config.status
+test_data/
+.deps/
+docs/
+doc/html/*.html
+doc/html/docbook.css
+doc/Makefile
+doc/Makefile.comments
+doc/**.xsl.xml
+test_data/
+
+# MacOS
+.DS_Store
+
+# Local diagnostic / probe scratch (underscore-prefixed); keepers have plain names
+# e.g. tools/boct_parity_probe.py stays tracked, tools/_warp_selftest.py does not.
+tools/_*
+                                                                                                                

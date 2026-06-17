@@ -1,0 +1,9 @@
+# postgis_hex9.control — extension control file (authoritative; lives in libhex9)
+comment = 'Hex9 (H9) Discrete Global Grid System for PostGIS'
+default_version = '1.4.0'
+# MODULE_PATHNAME in extension scripts (including upgrade scripts, which are
+# shipped verbatim) resolves through this at script-run time — $libdir keeps
+# it portable across installations.
+module_pathname = '$libdir/postgis_hex9-3'
+requires = 'postgis'
+relocatable = false

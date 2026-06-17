@@ -1,0 +1,299 @@
+-- hex9.sql — regression tests for postgis_hex9
+SET client_min_messages TO warning;
+
+-- ── h9_version ───────────────────────────────────────────────────────────────
+SELECT left(h9_version(), 14) AS version_prefix;
+
+-- ── h9_encode / h9_decode round-trip ─────────────────────────────────────────
+-- Decoded point should be SRID 4326 and within 1 m of the original.
+SELECT ST_SRID(h9_decode(h9_encode(
+    ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)))) AS srid;
+
+SELECT ST_Distance(
+    ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)::geography,
+    h9_decode(h9_encode(
+        ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)))::geography
+) < 1.0 AS roundtrip_sub_1m;
+
+-- ── h9_encode_many (batch encode) ─────────────────────────────────────────────
+-- Batch form must equal element-wise h9_encode, in order; preserve NULL
+-- elements positionally; and return an empty array (not NULL) for an empty
+-- input. The uuid[] result feeds h9_adaptive directly.
+WITH pts AS (
+    SELECT ARRAY[
+        ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326),
+        ST_SetSRID(ST_MakePoint(-3.1900, 55.9500), 4326),
+        ST_SetSRID(ST_MakePoint( 0.0,     0.0),    4326)
+    ]::geometry[] AS g
+)
+SELECT
+    h9_encode_many(g) = ARRAY[h9_encode(g[1]), h9_encode(g[2]), h9_encode(g[3])]
+                                                       AS matches_scalar,
+    array_length(h9_encode_many(g), 1) = 3             AS length_preserved
+FROM pts;
+
+-- NULL elements yield NULL UUIDs in place; non-null entries still encode.
+SELECT
+    h9_encode_many(ARRAY[
+        NULL,
+        ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326),
+        NULL
+    ]::geometry[]) IS NOT DISTINCT FROM ARRAY[
+        NULL,
+        h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)),
+        NULL
+    ]::uuid[]                                          AS nulls_preserved;
+
+-- Empty array → empty uuid[] (not NULL).
+SELECT h9_encode_many(ARRAY[]::geometry[]) = ARRAY[]::uuid[] AS empty_ok;
+
+-- A non-POINT element must raise an error.
+SELECT h9_encode_many(ARRAY[ST_SetSRID(ST_MakeEnvelope(0, 0, 1, 1), 4326)]);
+
+-- ── h9_label / h9_label_key ──────────────────────────────────────────────────
+-- London (Trafalgar Sq) at layer 8: known-stable label values.
+SELECT h9_label(
+    h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8),
+    8) AS label_l8;
+
+SELECT h9_label_key(
+    h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)),
+    8) AS label_key_l8;
+
+-- ── h9_bin idempotency ────────────────────────────────────────────────────────
+-- Binning an already-binned UUID at the same layer is a no-op.
+SELECT h9_bin(
+    h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8), 8)
+  = h9_bin(
+        h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8)
+  AS bin_idempotent;
+
+-- ── h9_bin hierarchy consistency ──────────────────────────────────────────────
+-- Coarsening to L7 directly == coarsening to L8 then to L7.
+SELECT h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 7)
+     = h9_bin(
+           h9_bin(h9_encode(
+               ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8),
+           7)
+  AS hierarchy_consistent;
+
+-- Two points in the same L8 cell must share the same L8 and L7 bins.
+-- h9_decode recovers the cell centre; re-encoding it must give the same bin.
+SELECT h9_bin(h9_encode(
+    h9_decode(h9_bin(
+        h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8))), 8)
+  = h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8)
+  AS centre_round_trip_bin;
+
+-- ── h9_cell geometry ──────────────────────────────────────────────────────────
+-- Cell polygon must be SRID 4326 and contain the decoded centre point.
+SELECT ST_SRID(h9_cell(
+    h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8),
+    8)) AS cell_srid;
+
+SELECT ST_Within(
+    h9_decode(h9_bin(
+        h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8)),
+    h9_cell(
+        h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 8),
+        8))
+  AS centre_within_cell;
+
+-- ── h9_grid: no duplicates, grid–cell polygon agreement, identity column ──────
+-- Small test area (~10–20 cells) around Trafalgar Square. h9_bin is the bin
+-- key; h9_id is the full identity (distinct per cell, and h9_bin(h9_id, 8)
+-- must recover the cell's own bin).
+WITH grid AS (
+    SELECT h9_id, h9_bin, geom
+    FROM h9_grid(ST_MakeEnvelope(-0.135, 51.500, -0.120, 51.512, 4326), 8)
+),
+checks AS (
+    SELECT
+        count(*)                                                       AS total,
+        count(DISTINCT h9_bin)                                         AS distinct_bins,
+        count(DISTINCT h9_id)                                          AS distinct_ids,
+        count(DISTINCT ST_AsEWKT(geom))                                AS distinct_polys,
+        count(*) FILTER (
+            WHERE NOT ST_Equals(geom, h9_cell(h9_bin, 8)))             AS cell_mismatch,
+        count(*) FILTER (WHERE h9_bin(h9_id, 8) <> h9_bin)             AS id_bin_mismatch
+    FROM grid
+)
+SELECT
+    total > 0                    AS has_cells,
+    total = distinct_bins        AS no_dup_bins,
+    total = distinct_ids         AS no_dup_ids,
+    total = distinct_polys       AS no_dup_polys,
+    cell_mismatch = 0            AS grid_cell_agree,
+    id_bin_mismatch = 0          AS id_rebins_to_cell
+FROM checks;
+
+-- ── h9_grid cap error ─────────────────────────────────────────────────────────
+-- Very large area at fine layer must raise an error.
+SELECT h9_grid(ST_MakeEnvelope(-10, 49, 2, 61, 4326), 14);
+
+-- ── h9_neighbors / h9_kring / h9_kdisk ────────────────────────────────────────
+-- Interior cell: exactly 6 distinct neighbours, none equal to the origin's
+-- cell. Input is the FULL UUID (bins are layer keys, not addresses — bin
+-- input is rejected, tested below); adjacency symmetry is covered at the C
+-- level (test/kring.c, test/gc_kring.c) since output bins cannot be
+-- traversed further in SQL.
+WITH origin AS (
+    SELECT h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)) AS u
+),
+nb AS (
+    SELECT n FROM origin, h9_neighbors(origin.u, 8) AS n
+)
+SELECT
+    count(*)                                            = 6 AS six_neighbors,
+    count(DISTINCT n)                                   = 6 AS all_distinct,
+    count(*) FILTER (WHERE n = h9_bin(origin.u, 8))     = 0 AS origin_excluded
+FROM origin, nb
+GROUP BY origin.u;
+
+-- k-ring/k-disk sizes for an interior cell: ring k has 6k cells, disk k has
+-- 1 + 3k(k+1); k = 0 ring is the cell's bin; ring(1) == neighbors;
+-- disk(2) = cell + ring(1) + ring(2).
+WITH origin AS (
+    SELECT h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)) AS u
+)
+SELECT
+    (SELECT count(*) FROM h9_kring(u, 8, 0))            = 1  AS ring0_is_self,
+    (SELECT r FROM h9_kring(u, 8, 0) AS r)  = h9_bin(u, 8)   AS ring0_value,
+    (SELECT count(*) FROM h9_kring(u, 8, 1))            = 6  AS ring1_count,
+    (SELECT count(*) FROM h9_kring(u, 8, 2))            = 12 AS ring2_count,
+    (SELECT count(*) FROM h9_kdisk(u, 8, 2))            = 19 AS disk2_count,
+    NOT EXISTS (
+        SELECT r FROM h9_kring(u, 8, 1) AS r
+        EXCEPT SELECT n FROM h9_neighbors(u, 8) AS n)        AS ring1_eq_neighbors,
+    NOT EXISTS (
+        (SELECT d FROM h9_kdisk(u, 8, 2) AS d
+         EXCEPT (SELECT r FROM h9_kring(u, 8, 0) AS r UNION
+                 SELECT r FROM h9_kring(u, 8, 1) AS r UNION
+                 SELECT r FROM h9_kring(u, 8, 2) AS r)))     AS disk_is_union
+FROM origin;
+
+-- Bad layer must raise an error.
+SELECT h9_neighbors(h9_encode(ST_SetSRID(ST_MakePoint(0, 0), 4326)), 0);
+
+-- Bin input must be rejected: bins are layer-scoped keys, not addresses.
+SELECT h9_neighbors(h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(0, 0), 4326)), 8), 8);
+SELECT h9_kring(h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(0, 0), 4326)), 8), 8, 1);
+
+-- ── h9_parse_label / h9_label_centroid / h9_common_ancestor ──────────────────
+-- Parsing a bare label, a keyed label, and round-tripping through h9_label
+-- must all recover the canonical bin; the label centroid must equal the
+-- bin's decoded centre exactly.
+WITH pt AS (
+    SELECT h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)) AS u
+)
+SELECT
+    h9_parse_label('435878503')          = h9_bin(u, 8) AS parse_bare,
+    h9_parse_label(h9_label_key(u, 8))   = h9_bin(u, 8) AS parse_keyed,
+    h9_label(h9_parse_label('435878503'), 8) = '435878503' AS label_round_trip,
+    ST_Equals(h9_label_centroid('435878503'),
+              h9_decode(h9_bin(u, 8)))                   AS centroid_matches
+FROM pt;
+
+-- Invalid label must raise an error.
+SELECT h9_parse_label('not-a-label');
+
+-- Common ancestor: a cell with itself is itself; Westminster ('435878503')
+-- and Edinburgh ('432177478') L8 cells share the prefix '43' (layer 1).
+WITH cells AS (
+    SELECT h9_parse_label('435878503') AS lon_cell,
+           h9_parse_label('432177478') AS edi_cell
+)
+SELECT
+    (h9_common_ancestor(ARRAY[lon_cell, lon_cell], 8)).label = '435878503'
+                                                       AS self_ancestor,
+    (h9_common_ancestor(ARRAY[lon_cell, lon_cell], 8)).layer = 8
+                                                       AS self_layer,
+    (h9_common_ancestor(ARRAY[lon_cell, edi_cell], 8)).label = '43'
+                                                       AS gb_ancestor,
+    (h9_common_ancestor(ARRAY[lon_cell, edi_cell], 8)).layer = 1
+                                                       AS gb_layer,
+    (h9_common_ancestor(ARRAY[lon_cell, edi_cell], 8)).h9_bin
+        = h9_parse_label('43')                         AS gb_uuid
+FROM cells;
+
+-- ── h9_adaptive ───────────────────────────────────────────────────────────────
+-- Digest a small weighted sample: conservation (sum of emitted values ==
+-- sum of input weights), layer bounds respected, every point's weight is
+-- below the ceiling so no cell may exceed it, and a tight cluster plus an
+-- outlier yields more than one cell.
+WITH sample AS (
+    SELECT ARRAY[
+        h9_encode(ST_SetSRID(ST_MakePoint(-0.1276,  51.5074), 4326)),   -- Trafalgar cluster
+        h9_encode(ST_SetSRID(ST_MakePoint(-0.1277,  51.5075), 4326)),
+        h9_encode(ST_SetSRID(ST_MakePoint(-0.1275,  51.5073), 4326)),
+        h9_encode(ST_SetSRID(ST_MakePoint(-0.1278,  51.5074), 4326)),
+        h9_encode(ST_SetSRID(ST_MakePoint(-3.1900,  55.9500), 4326))    -- Edinburgh outlier
+    ] AS pts,
+    ARRAY[10.0, 20.0, 30.0, 40.0, 5.0]::float8[] AS w
+),
+digest AS (
+    SELECT a.* FROM sample, h9_adaptive(pts, w, 4, 12, 60.0, 25.0) AS a
+)
+SELECT
+    sum(value) = 105.0                            AS conserved,
+    sum(npoints) = 5                              AS all_points_digested,
+    bool_and(layer BETWEEN 4 AND 12)              AS layers_in_range,
+    bool_and(value <= 60.0)                       AS ceiling_respected,
+    count(*) > 1                                  AS split_emitted,
+    bool_and(ST_NPoints(geom) = 7
+             AND ST_SRID(geom) = 4326
+             AND ST_Equals(geom, h9_cell(h9_bin, layer)))
+                                                  AS geom_is_the_cell,
+    -- density/grade are exact functions of (value, layer)
+    bool_and(abs(density - value * 12.0 * power(9.0, layer) / 510065622.0)
+             < 1e-9)                              AS density_formula,
+    bool_and(grade = layer + ln(value) / ln(9.0)) AS grade_formula
+FROM digest;
+
+-- NULL weights = every point weighs 1; a single point digests to one cell
+-- at min_layer with value 1.
+SELECT count(*) = 1                               AS one_cell,
+       bool_and(value = 1.0 AND npoints = 1)      AS unit_weight
+FROM h9_adaptive(
+    ARRAY[h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326))], NULL,
+    6, 10, 100.0);
+
+-- Bad layer bounds must raise an error.
+SELECT h9_adaptive(
+    ARRAY[h9_encode(ST_SetSRID(ST_MakePoint(0, 0), 4326))], NULL, 10, 6, 100.0);
+
+-- Bin input must be rejected (full uuids only — the digest re-bins across
+-- layers, guaranteed only from the full uuid).
+SELECT h9_adaptive(
+    ARRAY[h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(0.5, 0.5), 4326)), 8)],
+    NULL, 4, 8, 100.0);
+
+-- ── FOSSILS: documented failure modes (docs/addressing-doctrine.md) ───────────
+-- These pin KNOWN-BROKEN behaviour of the fossil paths (bins/labels treated
+-- as addresses) so it cannot drift silently. They are NOT desired behaviour:
+-- if one of these expectations changes, an identity/meta fix has landed —
+-- update the doctrine doc and these comments together.
+
+-- F1: bare labels are ambiguous at split-hex bodies. Westminster's L1 cell
+-- is '43' tail .5, but h9_parse_label('43') silently returns the OTHER '43'
+-- (tail .2, central Europe).
+SELECT h9_parse_label('43')
+       <> h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 1)
+  AS f1_bare_label_ambiguous;
+
+-- F2: identity decode mis-locates meta-bearing bins. Westminster's L1 bin
+-- (correct, Python-identical) decodes ~7,100 km away.
+SELECT ST_Distance(
+           ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)::geography,
+           h9_decode(h9_bin(h9_encode(
+               ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 1))::geography
+       ) > 5000000
+  AS f2_bin_decode_mislocated;
+
+-- F3: bin→coarser re-binning is unguaranteed at split-hex ancestry; near the
+-- (-90, 0) vertex it emits a structurally invalid all-sentinel body.
+SELECT h9_bin(h9_bin(u, 2), 1) = 'ffffffff-ffff-ffff-ffff-fffffffffff3'::uuid
+           AS f3_rebin_garbage,
+       h9_bin(h9_bin(u, 2), 1) <> h9_bin(u, 1)
+           AS f3_rebin_diverges
+FROM (SELECT h9_encode(ST_SetSRID(ST_MakePoint(-89.9863, 0.0091), 4326)) AS u) s;

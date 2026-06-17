@@ -1,0 +1,26 @@
+libhex9 — the Hex9 (H9) Discrete Global Grid System core
+
+Copyright © 2025–2026 Ben Griffin <ben@redsnapper.net>
+All rights reserved, except as granted under the licence below.
+
+LICENCE
+  This software is licensed under the Apache License, Version 2.0.
+  You may not use these files except in compliance with that licence.
+  The full text is provided in the accompanying LICENSE file and at
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, the Work is
+  distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied. See the licence for the specific
+  language governing permissions and limitations.
+
+AUTHORSHIP AND ACCOUNTABILITY
+  Ben Griffin is the sole author, copyright holder, and maintainer of this
+  work, and is the natural person accountable for it. Copyright and the
+  legal responsibilities that attach to authorship rest with that named
+  person — not with any tool, service, or automated system used during
+  development. See the LLM file for a note on tooling and provenance.
+
+  Per-file copyright notices in the source carry the year of first
+  authorship for that file; this notice is the canonical statement for the
+  work as a whole.
