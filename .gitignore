@@ -29,6 +29,9 @@ test_data/
 # MacOS
 .DS_Store
 
+# LLM
+.claude/
+
 # Local diagnostic / probe scratch (underscore-prefixed); keepers have plain names
 # e.g. tools/boct_parity_probe.py stays tracked, tools/_warp_selftest.py does not.
 tools/_*
