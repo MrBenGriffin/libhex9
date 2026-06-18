@@ -9,6 +9,26 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 include(GNUInstallDirs)
 
+# ── Embedded warp blob ──────────────────────────────────────────────────────
+# core/h9_warp_embedded.cpp .incbin's this file at compile time. It is the
+# F6 v3 (delta+gradient) sidecar generated from the sinkhorn warp on the hhg9
+# python side — checked into core/, so a normal build needs nothing external.
+# If it is missing, the assembler error from .incbin is opaque; fail early with
+# a pointer to the regeneration step instead.
+set(H9_WARP_BLOB_PATH
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/WGS84_l5_warp_f6.full.f64g.h9warp")
+if(NOT EXISTS "${H9_WARP_BLOB_PATH}")
+  message(FATAL_ERROR
+    "libhex9: embedded warp blob not found:\n"
+    "    ${H9_WARP_BLOB_PATH}\n"
+    "The library .incbin's this F6 v3 (delta+gradient) sidecar at compile time.\n"
+    "It is normally checked into core/. To regenerate it, run the producers in\n"
+    "tools/support/ from a python env with hhg9 importable (see that README):\n"
+    "    python tools/support/export_warp_grads.py   # -> WGS84_l5_warp_grads.npz\n"
+    "    python tools/support/export_warp_v3.py       # -> the .h9warp blob above\n"
+    "Inputs come from the hhg9/hex9 python repo (WGS84_l5_warp_data.npz).")
+endif()
+
 # ── libhex9 shared library ──────────────────────────────────────────────────
 add_library(hex9 SHARED
   hex9_c.cpp
@@ -21,7 +41,7 @@ target_include_directories(hex9
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)      # the C++ core
 target_compile_definitions(hex9 PRIVATE
   H9_WARP_ENABLE=1
-  H9_WARP_BLOB="${CMAKE_CURRENT_SOURCE_DIR}/core/WGS84_l5_warp_f6.full.f64g.h9warp")
+  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}")
 set_target_properties(hex9 PROPERTIES
   VERSION 0.1.0 SOVERSION 0
   OUTPUT_NAME hex9

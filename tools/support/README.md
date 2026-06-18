@@ -42,23 +42,43 @@ the cli's `check_*`, `diag_*`, `diff_*`, `compare_grid*`, `trace_*`,
 - `export_warp_header.py` — emits the 256×256 `h9_warp_data.h` grid for **PROJ**
   (`proj-9.8.0`), a different downstream consumer, not a libhex9 dependency.
 
-## ⚠️ OPEN: the actually-shipped v3 blob has no producer here
+## ✅ RESOLVED (2026-06-18): the v3 producer is `export_warp_v3.py`
 
-The library actually embeds **`core/WGS84_l5_warp_f6.full.f64g.h9warp` — format
-v3, with bundled per-vertex CT gradients** (6 × f64 per vertex; see the v3 path
-in `core/h9_warp_io.h`). Verified 2026-06-18: its deltas are bit-identical
-(max |diff| = 0.0 over 266,815 verts) to `hhg9/data/WGS84_l5_warp_data.npz`,
-CRC valid.
+The library embeds **`core/WGS84_l5_warp_f6.full.f64g.h9warp` — format v3, with
+bundled per-vertex CT gradients** (6 × f64 per vertex; see the v3 path in
+`core/h9_warp_io.h`). Its producer is **`export_warp_v3.py`** (in this dir).
 
-But the migrated `export_warp_deltas.py` writes **v2 only (no gradients)**. A
-search of the active python repo, the whole Archive tree, and libhex9's full git
-history (`--all`) found **no v3 / f64g / gradient-bundling exporter** — the v3
-blob was committed (`bd7c0be`) with no accompanying script.
+That script was authored + run inline in a prior libhex9 Claude session and
+produced the shipped blob, but was **never committed as a file** — which is why
+the earlier search (active repo + whole Archive + libhex9 git `--all`) and
+`grep "full.f64g"` found nothing: it lived only in the session transcript.
+Recovered verbatim on 2026-06-18 and **confirmed as THE producer**:
 
-**TODO (Ben to confirm):** locate the v3 (f64g) exporter — Ben believes the
-script exists somewhere; the auto-memory note ("v3 blob ships hhg9 gradients")
-may be stale on *where the producer lives*. If it's truly lost, reconstruct it
-by merging `export_warp_deltas.py` (v2 deltas, tri_mesh order) with
-`export_ct_grads.py` (gradients) into the 6-f64/vertex v3 layout that
-`core/h9_warp_io.h` reads. Until then, libhex9 can regenerate the **v2** path but
-not the blob it actually ships.
+- delta columns (blob `[:, 0:2]`) ≡ `target_pts − source_pts` — max diff `0.0`
+- gradient columns (blob `[:, 2:6]`) ≡ `grad_dx` / `grad_dy` — max diff `0.0`
+
+over all 266,815 verts (npz already in tri_mesh order → identity perm), CRC valid.
+
+`export_warp_deltas.py` (v2, no gradients) is retained as the format ancestor /
+mirrored-half reference, but `export_warp_v3.py` is what regenerates the shipped
+blob.
+
+## Full v3 pipeline (every step is now a tracked file)
+
+```
+(sinkhorn training, in hhg9)   -> hhg9/data/WGS84_l5_warp_data.npz     (deltas)
+export_warp_grads.py           -> experimental/sinkhorn/output/WGS84_l5_warp_grads.npz
+export_warp_v3.py              -> core/WGS84_l5_warp_f6.full.f64g.h9warp
+CMake .incbin (H9_WARP_BLOB)   -> blob embedded in libhex9
+```
+
+- `export_warp_grads.py` — reads the FINAL per-vertex CT gradients off the hhg9
+  `AuthalicWarp` loader (after ghost-orbit padding + x-mirror symmetrisation +
+  edge-tangent projection). Recovered from the brief's snippet; it had never been
+  a committed script.
+- `warp-port-brief-f6-cside.md` — the F6 C-side port brief: full rationale,
+  "Option A" (ship gradients) which both scripts implement, the construction
+  steps (fallback Option B), spot-check values, and acceptance criteria.
+  **Was git-ignored in `.claude/`** (would be lost on a clean checkout) — copied
+  here on 2026-06-18 to co-locate it with the scripts that implement it and make
+  it durable. Both scripts' docstrings reference this path.
