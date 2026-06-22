@@ -37,3 +37,4 @@ test_data/
 # e.g. tools/boct_parity_probe.py stays tracked, tools/_warp_selftest.py does not.
 tools/_*
                                                                                                                 
+build-*/
