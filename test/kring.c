@@ -150,7 +150,7 @@ int main(void) {
     /* error paths */
     uint8_t buf[7 * 16];
     CHECK(hex9_neighbors(full, 0, buf) == -1, "layer 0 not rejected");
-    CHECK(hex9_neighbors(full, 30, buf) == -1, "layer 30 not rejected");
+    CHECK(hex9_neighbors(full, hex9_lmax() + 1, buf) == -1, "layer > lmax not rejected");
     CHECK(hex9_k_disk(full, 8, 1, buf, 6) == -1, "undersized buffer not rejected");
     CHECK(hex9_k_ring(full, 8, 0, buf, 7) == 1, "ring(0) should be the cell itself");
 

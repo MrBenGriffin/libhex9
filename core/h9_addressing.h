@@ -14,14 +14,20 @@
  *   H9BOct h9_uuid_to_boct(const uint8_t uuid[16])
  *   void   h9_bin_uuid(const uint8_t in[16], int layer, uint8_t out[16])
  *
- * UUID layout (32 nibbles, big-endian)
+ * UUID layout (32 nibbles, big-endian) — parameterised by h9_layout.h
  * ─────────────────────────────────────
- *   nibbles  0..29 : body  L0..L29 (hierarchical hex digits; valid range 0..11
- *                    at L0, 0..8 at L1+; 0xF is never a valid body nibble)
- *   nibble      30 : h_term — terminal RID (0..11); 0xF = OOB sentinel in bins
- *   nibble      31 : key_tail = (p_mo << 3) | (p_c2 << 1) | r_mo
- *                    p_mo  = rids[29] & 1  (mode of parent, seeds backward pass)
- *                    p_c2  = c2 from H9_REG_HEX at the L29→L30 forward step
+ *   Legacy (HEX9_USE_L29, default):
+ *     nibbles  0..29 : body  L0..L29 (hierarchical hex digits; valid range 0..11
+ *                      at L0, 0..8 at L1+; 0xF is never a valid body nibble)
+ *     nibble      30 : h_term — terminal RID (0..11); 0xF = OOB sentinel in bins
+ *   Reclaimed (HEX9_USE_L29 off): h_term is cell-identity-redundant, so nibble
+ *     30 is reclaimed as body[30], extending addressing to L30. A full UUID then
+ *     IS a max-depth bin — there is no separate h_term / "address vs bin".
+ *   Both layouts:
+ *     nibbles 0..H9_NIB_BODYTOP : body  L0..L{BODYTOP}
+ *     nibble      31 : key_tail = (p_mo << 3) | (p_c2 << 1) | r_mo
+ *                    p_mo  = rids[H9_NIB_BODYTOP] & 1  (seeds the backward pass)
+ *                    p_c2  = c2 from H9_REG_HEX one step below the deepest body
  *                    r_mo  = oct_mode (0=DN, 1=UP); invariant within any cell
  *
  * Bin UUID (from h9_bin_uuid)
@@ -390,13 +396,13 @@ static void to_uuid(double fx, double fy, const int oct_i, const int oct_mode, u
 
 	/* Step 2 — 1-best descent: 36 levels → CID chain (cids[0]=proto, cids[1..36]=children)
 	 * Descend 6 extra levels for look-ahead; nibble encoding still uses only 1..30. */
-	uint8_t cids[37];
+	uint8_t cids[H9_DESC_MAX + 1];
 	cids[0] = H9_RID2CELL[oct_mode];
 
 	int cur_mode = oct_mode;
 	double cx = fx, cy = fy;
 
-	for (int l = 0; l < 36; ++l) {
+	for (int l = 0; l < H9_DESC_MAX; ++l) {
 		const double  *offx     = (cur_mode == 1) ? H9.UP_X    : H9.DN_X;
 		const double  *offy     = (cur_mode == 1) ? H9.UP_Y    : H9.DN_Y;
 		const uint8_t *cid_tab  = (cur_mode == 1) ? H9_UP_CIDS : H9_DN_CIDS;
@@ -417,8 +423,8 @@ static void to_uuid(double fx, double fy, const int oct_i, const int oct_mode, u
 	}
 
 	/* Step 3 — CID → RID */
-	uint8_t rids[37];
-	for (int i = 0; i <= 36; ++i)
+	uint8_t rids[H9_DESC_MAX + 1];
+	for (int i = 0; i <= H9_DESC_MAX; ++i)
 		rids[i] = H9_CELL2RID[cids[i]];
 
 	/* Step 4 — compute 30 body nibbles */
@@ -430,7 +436,7 @@ static void to_uuid(double fx, double fy, const int oct_i, const int oct_mode, u
 
 	/* L1..L29 body nibbles via H9_REG_HEX */
 	uint8_t last_c2 = 0;
-	for (int ri = 2; ri <= 30; ++ri) {
+	for (int ri = 2; ri <= H9_NIB_BODYTOP + 1; ++ri) {
 		const uint8_t gp_mo  = rids[ri-2] & 1u;
 		const uint8_t p_rid  = rids[ri-1];
 		const uint8_t c_rid  = rids[ri];
@@ -439,16 +445,19 @@ static void to_uuid(double fx, double fy, const int oct_i, const int oct_mode, u
 		last_c2       = entry[1];
 	}
 
-	/* Step 5 — terminal nibble and key_tail */
-	/* nibbles[30] = h_term: the terminal RID, stored raw (0..11, never 0xF) */
-	nibbles[30] = rids[30];
-	/* key_tail seeds the backward pass starting at L29:
-	 *   p_mo = rids[29] & 1  (c_mo for the H9_HEX_REG lookup at l=29)
-	 *   p_c2 = last_c2       (c2  for the H9_HEX_REG lookup at l=29)
-	 *   r_mo = oct_mode      (invariant; encodes octant UP/DN proto) */
-	const uint8_t p_mo = rids[29] & 1u;
+	/* Step 5 — terminal nibble (legacy h_term) and key_tail.
+	 * Legacy (HEX9_USE_L29): nibble H9_NIB_HTERM stores h_term = the look-ahead
+	 * terminal RID; the body stops at H9_NIB_BODYTOP (=L29).
+	 * Reclaimed (L30): the loop above already wrote body[H9_NIB_BODYTOP] (=L30)
+	 * into that nibble — there is no h_term. In BOTH layouts key_tail carries
+	 * (p_mo, p_c2=last_c2, r_mo): the (mode, c2) context one step below the
+	 * deepest body nibble, which seeds the H9_HEX_REG backward pass at decode. */
+#if H9_HAS_HTERM
+	nibbles[H9_NIB_HTERM] = rids[H9_NIB_HTERM];   /* h_term: raw RID (0..11, never 0xF) */
+#endif
+	const uint8_t p_mo = rids[H9_NIB_BODYTOP] & 1u;
 	const uint8_t r_mo = (uint8_t)oct_mode;
-	nibbles[31] = (uint8_t)((p_mo << 3) | (last_c2 << 1) | r_mo);
+	nibbles[H9_NIB_TAIL] = (uint8_t)((p_mo << 3) | (last_c2 << 1) | r_mo);
 	h9a_pack(nibbles, uuid);
 }
 
@@ -479,13 +488,13 @@ static void h9_boct_to_uuid(H9BOct b, uint8_t uuid[16]) {
 
     /* Step 2 — 1-best descent: 36 levels → CID chain (cids[0]=proto, cids[1..36]=children)
      * Descend 6 extra levels for look-ahead; nibble encoding still uses only 1..30. */
-    uint8_t cids[37];
+    uint8_t cids[H9_DESC_MAX + 1];
     cids[0] = H9_RID2CELL[oct_mode];
 
     int cur_mode = oct_mode;
     double cx = fx, cy = fy;
 
-    for (int l = 0; l < 36; ++l) {
+    for (int l = 0; l < H9_DESC_MAX; ++l) {
         const double  *offx     = (cur_mode == 1) ? H9.UP_X    : H9.DN_X;
         const double  *offy     = (cur_mode == 1) ? H9.UP_Y    : H9.DN_Y;
         const uint8_t *cid_tab  = (cur_mode == 1) ? H9_UP_CIDS : H9_DN_CIDS;
@@ -506,8 +515,8 @@ static void h9_boct_to_uuid(H9BOct b, uint8_t uuid[16]) {
     }
 
     /* Step 3 — CID → RID */
-    uint8_t rids[37];
-	for (int i = 0; i <= 36; ++i) {
+    uint8_t rids[H9_DESC_MAX + 1];
+	for (int i = 0; i <= H9_DESC_MAX; ++i) {
 		rids[i] = H9_CELL2RID[cids[i]];
 //		std::cout << std::hex << std::uppercase << (int)rids[idx];
 	}
@@ -523,7 +532,7 @@ static void h9_boct_to_uuid(H9BOct b, uint8_t uuid[16]) {
 
     /* L1..L29 body nibbles via H9_REG_HEX */
     uint8_t last_c2 = 0;
-    for (int ri = 2; ri <= 30; ++ri) {
+    for (int ri = 2; ri <= H9_NIB_BODYTOP + 1; ++ri) {
         const uint8_t gp_mo  = rids[ri-2] & 1u;
         const uint8_t p_rid  = rids[ri-1];
         const uint8_t c_rid  = rids[ri];
@@ -532,17 +541,16 @@ static void h9_boct_to_uuid(H9BOct b, uint8_t uuid[16]) {
         last_c2       = entry[1];
     }
 
-    /* Step 5 — terminal nibble and key_tail */
-    /* nibbles[30] = h_term: the terminal RID, stored raw (0..11, never 0xF) */
-    nibbles[30] = rids[30];
-    /* key_tail seeds the backward pass starting at L29:
-     *   p_mo = rids[29] & 1  (c_mo for the H9_HEX_REG lookup at l=29)
-     *   p_c2 = last_c2       (c2  for the H9_HEX_REG lookup at l=29)
-     *   r_mo = oct_mode      (invariant; encodes octant UP/DN proto) */
-    const uint8_t p_mo = rids[29] & 1u;
+    /* Step 5 — terminal nibble (legacy h_term) and key_tail. See to_uuid for the
+     * layout rationale: h_term exists only on HEX9_USE_L29; key_tail always
+     * carries the (mode, c2) context one step below the deepest body nibble. */
+#if H9_HAS_HTERM
+    nibbles[H9_NIB_HTERM] = rids[H9_NIB_HTERM];   /* h_term: raw RID (0..11, never 0xF) */
+#endif
+    const uint8_t p_mo = rids[H9_NIB_BODYTOP] & 1u;
     const uint8_t r_mo = (uint8_t)oct_mode;
-    nibbles[31] = (uint8_t)((p_mo << 3) | (last_c2 << 1) | r_mo);
-	
+    nibbles[H9_NIB_TAIL] = (uint8_t)((p_mo << 3) | (last_c2 << 1) | r_mo);
+
     h9a_pack(nibbles, uuid);
 }
 
@@ -594,7 +602,7 @@ static void h9_boct_to_uuid_beam(H9BOct b, int beam_depth, int beam_w, uint8_t u
 #endif
     h9_clamp_bary(&fx, &fy, oct_mode);
 
-    struct BCand { double cx, cy, score; int mode; uint8_t cids[37]; };
+    struct BCand { double cx, cy, score; int mode; uint8_t cids[H9_DESC_MAX + 1]; };
     BCand beam[9], nxt[81];   /* max beam_w=9, next has beam_w*9 slots */
     beam[0].cx = fx; beam[0].cy = fy; beam[0].score = 0.0;
     beam[0].mode = oct_mode;
@@ -636,11 +644,11 @@ static void h9_boct_to_uuid_beam(H9BOct b, int beam_depth, int beam_w, uint8_t u
     }
 
     /* 1-best continuation from best candidate for remaining levels (up to 36 total) */
-    uint8_t cids[37];
+    uint8_t cids[H9_DESC_MAX + 1];
     memcpy(cids, beam[0].cids, (size_t)(beam_depth + 1));
     double cx = beam[0].cx, cy = beam[0].cy;
     int cur_mode = beam[0].mode;
-    for (int l = beam_depth; l < 36; ++l) {
+    for (int l = beam_depth; l < H9_DESC_MAX; ++l) {
         const double  *offx     = (cur_mode == 1) ? H9.UP_X    : H9.DN_X;
         const double  *offy     = (cur_mode == 1) ? H9.UP_Y    : H9.DN_Y;
         const uint8_t *cid_tab  = (cur_mode == 1) ? H9_UP_CIDS : H9_DN_CIDS;
@@ -658,18 +666,20 @@ static void h9_boct_to_uuid_beam(H9BOct b, int beam_depth, int beam_w, uint8_t u
     }
 
     /* Pack: CIDs → RIDs → nibbles → UUID (same as h9_boct_to_uuid steps 3–5) */
-    uint8_t rids[37];
-    for (int i = 0; i <= 36; ++i) rids[i] = H9_CELL2RID[cids[i]];
+    uint8_t rids[H9_DESC_MAX + 1];
+    for (int i = 0; i <= H9_DESC_MAX; ++i) rids[i] = H9_CELL2RID[cids[i]];
 
     uint8_t nibbles[32];
     nibbles[0] = H9_L0HEX_BY_ID[py_oid][H9_MCC2[oct_mode][cids[1]]];
     uint8_t last_c2 = 0;
-    for (int ri = 2; ri <= 30; ++ri) {
+    for (int ri = 2; ri <= H9_NIB_BODYTOP + 1; ++ri) {
         const uint8_t *e = H9_REG_HEX[rids[ri-2] & 1u][rids[ri-1]][rids[ri]];
         nibbles[ri-1] = e[0]; last_c2 = e[1];
     }
-    nibbles[30] = rids[30];
-    nibbles[31] = (uint8_t)(((rids[29] & 1u) << 3) | (last_c2 << 1) | (uint8_t)oct_mode);
+#if H9_HAS_HTERM
+    nibbles[H9_NIB_HTERM] = rids[H9_NIB_HTERM];   /* h_term (legacy layout only) */
+#endif
+    nibbles[H9_NIB_TAIL] = (uint8_t)(((rids[H9_NIB_BODYTOP] & 1u) << 3) | (last_c2 << 1) | (uint8_t)oct_mode);
     h9a_pack(nibbles, uuid);
 }
 
@@ -694,30 +704,51 @@ static H9BOct h9_uuid_to_boct(const uint8_t uuid[16]) {
     const uint8_t p_c2 = (key_tail >> 1) & 3u;
     const uint8_t r_mo = key_tail & 1u;
 
-    /* Detect bin UUID (nibbles[30]==0xF) and find effective top level.
-     * Full UUID: top_l=30, h_term in nibbles[30], backward pass L29→L1.
-     * Bin  UUID: top_l=L,  sentinels in nibbles[L+1..30], backward pass LL→L1. */
+    /* Find effective top level and seed the backward pass. The discriminator is
+     * the deepest non-tail nibble (H9_NIB_TAIL-1, == 30 in both layouts):
+     * 0xF there means a bin; a body digit means a full-depth address. */
+#if H9_HAS_HTERM
+    /* Legacy: a full UUID carries h_term in nibble H9_NIB_HTERM (=30) and body
+     * to H9_NIB_BODYTOP (=29); the backward pass starts one level above h_term.
+     * A bin sentinels nibbles[L+1..30] and starts at its own top L. */
     int top_l;
-    if (nibbles[30] == 0x0Fu) {
+    if (nibbles[H9_NIB_HTERM] == 0x0Fu) {
         top_l = 0;
-        for (int l = 1; l <= 29; ++l) {
+        for (int l = 1; l <= H9_LMAX; ++l) {
             if (nibbles[l] == 0x0Fu) break;
             top_l = l;
         }
     } else {
-        top_l = 30;
+        top_l = H9_NIB_HTERM;
     }
 
     uint8_t rids[31] = {};
     rids[0] = r_mo;
-    if (nibbles[30] != 0x0Fu)
-        rids[30] = nibbles[30];  /* h_term for full UUID */
+    if (nibbles[H9_NIB_HTERM] != 0x0Fu)
+        rids[H9_NIB_HTERM] = nibbles[H9_NIB_HTERM];  /* h_term for full UUID */
+#else
+    /* Reclaimed: h_term is gone, so a full UUID IS a max-depth bin — body runs
+     * to H9_NIB_BODYTOP (=30) and the backward pass recovers rids[top_l..1]
+     * uniformly. Address vs bin dissolves into a single decode path. */
+    int top_l = 0;
+    for (int l = 1; l <= H9_LMAX; ++l) {
+        if (nibbles[l] == 0x0Fu) break;
+        top_l = l;
+    }
+
+    uint8_t rids[31] = {};
+    rids[0] = r_mo;
+#endif
 
     uint8_t c_mo = p_mo;
     uint8_t c2   = p_c2;
-    /* Full UUID: backward pass L29→L1 (rids[30] already set from h_term).
-     * Bin  UUID: backward pass LL→L1 (key_tail holds context at layer L). */
-    const int back_start = (nibbles[30] != 0x0Fu) ? top_l - 1 : top_l;
+    /* Legacy full UUID seeds one level above h_term (rids[H9_NIB_HTERM] is
+     * already set); bins — and every L30 address — start at their own top_l. */
+#if H9_HAS_HTERM
+    const int back_start = (nibbles[H9_NIB_HTERM] != 0x0Fu) ? top_l - 1 : top_l;
+#else
+    const int back_start = top_l;
+#endif
     for (int l = back_start; l >= 1; --l) {
         const uint8_t *entry = H9_HEX_REG[nibbles[l]][c_mo][c2];
         rids[l] = entry[0];
@@ -817,8 +848,9 @@ static void h9_bin_uuid(const uint8_t in[16], int layer, uint8_t out[16]) {
     h9a_unpack(in, nibbles);
     const uint8_t r_mo = nibbles[31] & 1u;
 
-    /* Input depth. Full UUIDs carry body digits to L29 plus h_term at [30];
-     * bin UUIDs end at the deepest non-sentinel nibble. The backward pass
+    /* Input depth. Full UUIDs carry body to H9_NIB_BODYTOP (plus h_term at
+     * H9_NIB_HTERM on the legacy layout); bin UUIDs end at the deepest
+     * non-sentinel nibble. The backward pass
      * MUST start at the input's true depth: a 0xF sentinel would index
      * H9_HEX_REG[9][2][3][3] out of bounds (silent garbage context — the
      * historical re-bin-a-bin bug).
@@ -830,9 +862,9 @@ static void h9_bin_uuid(const uint8_t in[16], int layer, uint8_t out[16]) {
      * FULL uuid. Kept because it works away from meta-bearing cells. */
     uint8_t c_mo = (nibbles[31] >> 3) & 1u;
     uint8_t c2   = (nibbles[31] >> 1) & 3u;
-    int top = 29;
-    if (nibbles[30] == 0x0Fu) {
-        int bl = 29;
+    int top = H9_NIB_BODYTOP;
+    if (nibbles[H9_NIB_TAIL - 1] == 0x0Fu) {
+        int bl = H9_NIB_BODYTOP;
         while (bl >= 1 && nibbles[bl] == 0x0Fu) bl--;
         top = bl;
         if (layer >= top) {
@@ -862,8 +894,8 @@ static void h9_bin_uuid(const uint8_t in[16], int layer, uint8_t out[16]) {
     /* Step 1a — backward pass from the input depth down to layer+1.
      * After the loop (c_mo, c2) = backward-pass context at level layer —
      * used both to seed step 1b and as the key_tail context for this bin.
-     * The actual rids[layer+1] is saved on the last iteration (or from
-     * nibbles[30] directly when layer==29). */
+     * The actual rids[layer+1] is saved on the last iteration (or from the
+     * h_term nibble directly when layer==H9_NIB_BODYTOP on the legacy layout). */
     uint8_t rids[31] = {};
     rids[0] = r_mo;
 
@@ -872,8 +904,11 @@ static void h9_bin_uuid(const uint8_t in[16], int layer, uint8_t out[16]) {
         if (l == layer + 1) rids[l] = e[0];   /* actual child at layer+1 */
         c_mo = e[1]; c2 = e[2];
     }
-    /* Special case: layer==29 — rids[30] is the h_term stored directly. */
-    if (layer == 29) rids[30] = nibbles[30];
+#if H9_HAS_HTERM
+    /* Legacy: binning to the body top (layer==BODYTOP) takes rids[BODYTOP+1]
+     * from the h_term nibble directly. No h_term in the reclaimed layout. */
+    if (layer == H9_NIB_BODYTOP) rids[H9_NIB_HTERM] = nibbles[H9_NIB_HTERM];
+#endif
 
     /* Save backward-pass context at layer for the key_tail. */
     const uint8_t kt_c_mo = c_mo, kt_c2 = c2;
@@ -887,12 +922,12 @@ static void h9_bin_uuid(const uint8_t in[16], int layer, uint8_t out[16]) {
         }
     }
 
-    /* Step 2 — canonical child-0 descent for rids[layer+2..30].
+    /* Step 2 — canonical child-0 descent for rids[layer+2..BODYTOP+1].
      * rids[layer+1] is the actual child decoded in step 1a, preserving the
      * lookahead nibble[layer] = REG_HEX[...][rids[layer]][rids[layer+1]]. */
-    if (layer + 1 < 30) {
+    if (layer < H9_NIB_BODYTOP) {
         int cur_mode = (int)(rids[layer + 1] & 1u);
-        for (int l = layer + 1; l < 30; ++l) {
+        for (int l = layer + 1; l < H9_NIB_BODYTOP + 1; ++l) {
             const uint8_t *cidtab  = (cur_mode == 1) ? H9_UP_CIDS : H9_DN_CIDS;
             const int     *modetab = (cur_mode == 1) ? H9_UP_MODE : H9_DN_MODE;
             rids[l + 1] = H9_CELL2RID[cidtab[0]];
@@ -900,23 +935,33 @@ static void h9_bin_uuid(const uint8_t in[16], int layer, uint8_t out[16]) {
         }
     }
 
-    /* Step 3 — forward re-encode nibbles[1..29].
+    /* Step 3 — forward re-encode nibbles[1..layer].
      * nibbles[1..layer-1] reproduce the input body (round-trip identity).
      * nibbles[layer] is recomputed with actual rids[layer+1] — matching
      * Python's TailStyle.key which uses the actual descent child.
-     * nibbles[layer+1..29] use canonical descendants (overwritten in step 4). */
-    uint8_t last_c2 = 0;
-    for (int ri = 2; ri <= 30; ++ri) {
+     * nibbles[layer+1..BODYTOP] use canonical descendants (overwritten in step 4).
+     * Reclaimed layout only: binning to H9_NIB_BODYTOP has no lookahead child
+     * (rids[BODYTOP+1] is gone), so stop one short and keep the input's deepest
+     * body nibble verbatim — it already carries the canonical max-depth digit. */
+    int reenc_top = H9_NIB_BODYTOP + 1;
+#if !H9_HAS_HTERM
+    if (layer == H9_NIB_BODYTOP) reenc_top = H9_NIB_BODYTOP;
+#endif
+    uint8_t last_c2 = 0; (void)last_c2;
+    for (int ri = 2; ri <= reenc_top; ++ri) {
         const uint8_t *e = H9_REG_HEX[rids[ri-2]&1u][rids[ri-1]][rids[ri]];
         nibbles[ri-1] = e[0]; last_c2 = e[1];
     }
 
     /* Step 4 — sentinel fill and key_tail.
-     * Python tail_pack_key stores (c2_L << 1) | r_mo — no c_mo bit.
-     * Match that format: nibble[31] = (kt_c2 << 1) | r_mo. */
-    for (int i = layer + 1; i <= 30; ++i)
+     * Sentinel every body/h_term nibble below `layer` up to the deepest non-tail
+     * nibble (H9_NIB_TAIL-1 == 30 in both layouts). On the legacy layout this is
+     * what clears the h_term nibble to 0xF for a layer==BODYTOP bin; on the
+     * reclaimed layout a layer==BODYTOP bin fills nothing and keeps body[30].
+     * Python tail_pack_key stores (c2_L << 1) | r_mo — no c_mo bit. */
+    for (int i = layer + 1; i <= H9_NIB_TAIL - 1; ++i)
         nibbles[i] = 0x0Fu;
-    nibbles[31] = (uint8_t)((kt_c2 << 1) | r_mo);
+    nibbles[H9_NIB_TAIL] = (uint8_t)((kt_c2 << 1) | r_mo);
 
     h9a_pack(nibbles, out);
 }

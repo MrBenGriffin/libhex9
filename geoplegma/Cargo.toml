@@ -1,0 +1,23 @@
+[package]
+name = "hex9-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Low-level FFI bindings to libhex9 (the Hex9 / H9 aperture-9 hexagonal DGGS C ABI)"
+license = "Apache-2.0"
+repository = "https://github.com/MrBenGriffin/libhex9"
+links = "hex9"
+build = "build.rs"
+
+# This crate lives inside the libhex9 repository (at geoplegma/, named for its
+# consumer — GeoPlegma — the way extension/postgis_hex9 is). GeoPlegma depends
+# on it as a git dependency with a local path override. It builds libhex9's
+# static target (hex9Static) and bindgens hex9_c.h; safe wrappers live in the
+# GeoPlegma `hex9` adapter, not here.
+
+[lib]
+name = "hex9_sys"
+path = "src/lib.rs"
+
+[build-dependencies]
+cmake = "0.1"
+bindgen = "0.71"

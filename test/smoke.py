@@ -11,6 +11,7 @@ import numpy as np
 import hex9_ext as h9   # <- if this aborts with "OMP: Error #15", we have a libomp clash
 
 print("version:", h9.version())
+print("lmax:", h9.lmax(), "(29 = legacy layout, 30 = reclaimed h_term)")
 h9.warp_init()
 
 n = 100_000
@@ -24,7 +25,11 @@ dt = time.perf_counter() - t0
 print(f"encode {n} pts -> {uu.shape} {uu.dtype} in {dt:.3f}s ({n/dt:,.0f} pts/s, OMP)")
 
 dlon, dlat = h9.decode(uu)
-err = float(np.abs(dlon - lon).max() + np.abs(dlat - lat).max())
+# Fold longitude wraparound: an antimeridian point may decode to the other sign
+# (e.g. the L30 canonical centroid returns +180 for a -180 input) — zero geodesic
+# error, so the naive |Δlon| must be reduced into [0,180].
+dlo = np.abs(dlon - lon); dlo = np.minimum(dlo, 360.0 - dlo)
+err = float(dlo.max() + np.abs(dlat - lat).max())
 print(f"decode round-trip max err: {err:.2e} deg")
 
 # Cross-check one known point against the hhg9 oracle (432177478...).

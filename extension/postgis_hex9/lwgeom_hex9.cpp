@@ -414,9 +414,9 @@ Datum h9_bin(PG_FUNCTION_ARGS) {
 	pg_uuid_t *u	 = PG_GETARG_UUID_P(0);
 	int32		layer = PG_GETARG_INT32(1);
 
-	if (layer < 0 || layer > 29)
+	if (layer < 0 || layer > hex9_lmax())
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("h9_bin: layer must be 0..29, got %d", layer)));
+						errmsg("h9_bin: layer must be 0..%d, got %d", hex9_lmax(), layer)));
 
 	uint8_t out_bytes[UUID_LEN];
 	if (hex9_bin(u->data, layer, out_bytes) != 0)
@@ -452,17 +452,17 @@ Datum h9_cell(PG_FUNCTION_ARGS) {
 	pg_uuid_t *u       = PG_GETARG_UUID_P(0);
 	int32      layer   = PG_GETARG_INT32(1);
 	int32      densify = PG_GETARG_INT32(2);
-	if (layer < 1 || layer > 29)
+	if (layer < 1 || layer > hex9_lmax())
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("h9_cell: layer must be 1..29, got %d", layer)));
+						errmsg("h9_cell: layer must be 1..%d, got %d", hex9_lmax(), layer)));
 	if (densify < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("h9_cell: densify must be >= 0, got %d", densify)));
 	if (layer + densify > 29)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("h9_cell: layer + densify must be <= 29 "
+						errmsg("h9_cell: layer + densify must be <= %d "
 						       "(layer=%d, densify=%d -> %d)",
-						       layer, densify, layer + densify)));
+						       hex9_lmax(), layer, densify, layer + densify)));
 	/* Hard cap to keep ring sizes sane (6·3^densify+1 = 118099 at densify=9). */
 	if (densify > 9)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -494,7 +494,7 @@ Datum h9_label(PG_FUNCTION_ARGS) {
 
 	if (layer < 0 || layer > 29)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("h9_label: layer must be 0..29, got %d", layer)));
+						errmsg("h9_label: layer must be 0..%d, got %d", hex9_lmax(), layer)));
 
 	char buf[40];
 	int	len = hex9_label(u->data, layer, buf, sizeof(buf));
@@ -520,7 +520,7 @@ Datum h9_label_key(PG_FUNCTION_ARGS) {
 
 	if (layer < 0 || layer > 29)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("h9_label_key: layer must be 0..29, got %d", layer)));
+						errmsg("h9_label_key: layer must be 0..%d, got %d", hex9_lmax(), layer)));
 
 	char buf[40];
 	int	len = hex9_label_key(u->data, layer, buf, sizeof(buf));
@@ -602,17 +602,17 @@ Datum h9_grid(PG_FUNCTION_ARGS) {
 		int32        layer      = PG_GETARG_INT32(1);
 		int32        densify    = PG_GETARG_INT32(2);
 
-		if (layer < 1 || layer > 29)
+		if (layer < 1 || layer > hex9_lmax())
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							errmsg("h9_grid: layer must be 1..29, got %d", layer)));
+							errmsg("h9_grid: layer must be 1..%d, got %d", hex9_lmax(), layer)));
 		if (densify < 0)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							errmsg("h9_grid: densify must be >= 0, got %d", densify)));
 		if (layer + densify > 29)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							errmsg("h9_grid: layer + densify must be <= 29 "
+							errmsg("h9_grid: layer + densify must be <= %d "
 							       "(layer=%d, densify=%d -> %d)",
-							       layer, densify, layer + densify)));
+							       hex9_lmax(), layer, densify, layer + densify)));
 		if (densify > 9)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							errmsg("h9_grid: densify must be <= 9, got %d", densify)));
@@ -811,7 +811,7 @@ Datum h9_neighbors(PG_FUNCTION_ARGS) {
 		int32      layer = PG_GETARG_INT32(1);
 		if (layer < 1 || layer > 29)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							errmsg("h9_neighbors: layer must be 1..29, got %d", layer)));
+							errmsg("h9_neighbors: layer must be 1..%d, got %d", hex9_lmax(), layer)));
 		h9_reject_bin_input(u, "h9_neighbors");
 		state->uuids = (uint8_t *) palloc(6 * 16);
 		int n = hex9_neighbors(u->data, layer, state->uuids);
@@ -833,9 +833,9 @@ static int64_t h9_kring_fill(PG_FUNCTION_ARGS, H9UuidSetState *state,
 	pg_uuid_t *u     = PG_GETARG_UUID_P(0);
 	int32      layer = PG_GETARG_INT32(1);
 	int32      k     = PG_GETARG_INT32(2);
-	if (layer < 1 || layer > 29)
+	if (layer < 1 || layer > hex9_lmax())
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("%s: layer must be 1..29, got %d", fname, layer)));
+						errmsg("%s: layer must be 1..%d, got %d", fname, hex9_lmax(), layer)));
 	if (k < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("%s: k must be >= 0, got %d", fname, k)));
@@ -928,10 +928,10 @@ Datum h9_common_ancestor(PG_FUNCTION_ARGS) {
 	ArrayType *arr   = PG_GETARG_ARRAYTYPE_P(0);
 	int32      layer = PG_GETARG_INT32(1);
 
-	if (layer < 0 || layer > 29)
+	if (layer < 0 || layer > hex9_lmax())
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("h9_common_ancestor: layer must be 0..29, got %d",
-						       layer)));
+						errmsg("h9_common_ancestor: layer must be 0..%d, got %d",
+						       hex9_lmax(), layer)));
 
 	Datum *elems;
 	bool  *nulls;

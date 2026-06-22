@@ -2,8 +2,11 @@
 
 A PostGIS extension for the **Hex9 (H9) Discrete Global Grid System** — an
 equal-area hexagonal global grid with self-contained UUID cell identifiers and a
-9-fold (3×3) hierarchy from layer 0 (12 base cells) down to layer 29
-(~95 nm cell diameter).
+9-fold (3×3) hierarchy from layer 0 (12 base cells) down to layer 30
+(~32 nm cell diameter). The legacy `USE_L29` build layout stops at layer 29
+(~95 nm); the default reclaims the old terminal nibble as a real body digit, so
+a full UUID *is* its own deepest-layer bin. The deepest layer is reported by
+`h9_version()`/`hex9_lmax()`.
 
 Each cell ID is a standard `uuid`, so it indexes, joins, and `GROUP BY`s with
 zero custom types. An authalic (equal-area) warp keeps cell areas uniform to
@@ -36,7 +39,7 @@ make installcheck        # needs a PostgreSQL with PostGIS available
 
 | Term | Meaning |
 |------|---------|
-| **layer** | Resolution level `0`–`29`. Each step is a 3×3 (9×) subdivision. Layer 29 ≈ 95 nm. |
+| **layer** | Resolution level `0`–`30` (`0`–`29` on the legacy `USE_L29` layout). Each step is a 3×3 (9×) subdivision. Layer 30 ≈ 32 nm. |
 | **full UUID** | From `h9_encode()`. Carries the exact point context — losslessly reversible via `h9_decode()`. |
 | **bin UUID** | From `h9_bin(uuid, layer)`. All points in the same layer-`L` cell collapse to one UUID — the cell key for aggregation. (Lossy below `L`.) |
 | **cell** | The hexagon for one UUID at a layer — `h9_cell()` (one) or `h9_grid()` (many over an area). |
@@ -78,12 +81,12 @@ CREATE INDEX ON my_points (cell8);
 
 | Function | Returns | Purpose |
 |----------|---------|---------|
-| `h9_encode(geometry)` | `uuid` | Encode a POINT (any SRID transformable to 4326) to its layer-29 cell UUID. |
+| `h9_encode(geometry)` | `uuid` | Encode a POINT (any SRID transformable to 4326) to its deepest-layer cell UUID (layer 30; 29 on the legacy layout). |
 | `h9_encode_many(geometry[])` | `uuid[]` | Batch `h9_encode`, one OpenMP-parallel pass, input order preserved; NULL elements → NULL. *(1.3.0)* |
-| `h9_decode(uuid)` | `geometry` | Decode a UUID back to a POINT (SRID 4326). Round-trips `h9_encode` to ~95 nm. |
-| `h9_bin(uuid, layer)` | `uuid` | Cell-key UUID at `layer` 0–29. Equal for all points sharing that cell — use for `GROUP BY` / indexes. |
-| `h9_cell(uuid, layer, densify DEFAULT 0)` | `geometry` | Hexagon polygon (SRID 4326) for a UUID at `layer` 1–29. |
-| `h9_grid(bounds, layer, densify DEFAULT 0)` | `TABLE(h9_id uuid, h9_bin uuid, geom geometry, centroid geometry)` | Every cell at `layer` 1–29 whose centre lies in `bounds`. `h9_id` = full reversible identity; `h9_bin` = grouping key. *(h9_id + rename, 1.4.0)* |
+| `h9_decode(uuid)` | `geometry` | Decode a UUID back to a POINT (SRID 4326). Round-trips `h9_encode` to ~32 nm (~95 nm on the legacy layout). |
+| `h9_bin(uuid, layer)` | `uuid` | Cell-key UUID at `layer` 0–30. Equal for all points sharing that cell — use for `GROUP BY` / indexes. |
+| `h9_cell(uuid, layer, densify DEFAULT 0)` | `geometry` | Hexagon polygon (SRID 4326) for a UUID at `layer` 1–30. |
+| `h9_grid(bounds, layer, densify DEFAULT 0)` | `TABLE(h9_id uuid, h9_bin uuid, geom geometry, centroid geometry)` | Every cell at `layer` 1–30 whose centre lies in `bounds`. `h9_id` = full reversible identity; `h9_bin` = grouping key. *(h9_id + rename, 1.4.0)* |
 | `h9_label(uuid, layer)` | `text` | Compact body-nibble label, e.g. `478232778`. |
 | `h9_label_key(uuid, layer)` | `text` | `h9_label` plus the `.key_tail` nibble, e.g. `478232778.9`. |
 | `h9_parse_label(text)` | `uuid` | Canonical bin UUID from a bare (`h9_label`) or keyed (`h9_label_key`) label. *(1.2.0)* |
@@ -133,7 +136,7 @@ each of the 6 hex edges into `3^densify` segments, so edges follow the H9 lattic
 instead of straight `(lon, lat)` chords. Ring size is `6·3^densify + 1`
 (`0`→7, `1`→19, `2`→55, `3`→163 points). Useful at coarse layers (≤ 3); at
 layer ≥ 5 the corner-only form is normally fine. Constraints: `densify ≥ 0`,
-`layer + densify ≤ 29`, `densify ≤ 9`.
+`layer + densify ≤ 30` (≤ 29 on the legacy layout), `densify ≤ 9`.
 
 ```sql
 -- A layer-2 grid over Europe with smooth (densified) hex edges:

@@ -51,7 +51,12 @@ int main(int argc, char **argv) {
     hex9_decode_many(bat, N, dlon, dlat);
     double maxe = 0.0;
     for (size_t i = 0; i < N; ++i) {
-        double e = fabs(dlon[i] - lon[i]) + fabs(dlat[i] - lat[i]);
+        /* Longitude wraps: a point on the antimeridian may decode to the other
+         * sign (e.g. the L30 canonical centroid returns +180 for a -180 input).
+         * That is zero geodesic error, so fold the diff into [0,180]. */
+        double dlo = fabs(dlon[i] - lon[i]);
+        if (dlo > 180.0) dlo = 360.0 - dlo;
+        double e = dlo + fabs(dlat[i] - lat[i]);
         if (e > maxe) maxe = e;
     }
 

@@ -9,6 +9,16 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 include(GNUInstallDirs)
 
+# ── Addressing layout: L30 (default, reclaims the h_term nibble) vs L29 (legacy)
+# L30 is canonical: the h_term nibble is reclaimed as body[30], a full UUID IS the
+# max-depth bin, and the deepest tail is the 3-bit canonical key (r_mo|p_c2). Build
+# with -DHEX9_USE_L29=ON for the legacy 29-layer on-disk format (e.g. to reproduce
+# test/golden_l29.py). The L30 invariant suite (test/l30_invariants.py) gates this.
+option(HEX9_USE_L29 "Use the legacy 29-layer UUID layout (OFF = 30-layer, default)" OFF)
+if(HEX9_USE_L29)
+  add_compile_definitions(HEX9_USE_L29)
+endif()
+
 # ── Embedded warp blob ──────────────────────────────────────────────────────
 # core/h9_warp_embedded.cpp .incbin's this file at compile time. It is the
 # F6 v3 (delta+gradient) sidecar generated from the sinkhorn warp on the hhg9
@@ -58,8 +68,27 @@ else()
   message(STATUS "libhex9: OpenMP NOT found — serial build")
 endif()
 
+# ── libhex9 static library ──────────────────────────────────────────────────
+# For static linkers — notably the Rust `-sys` crate at geoplegma/ (consumed by
+# GeoPlegma as a DGGRS backend). Same sources/headers/defs as the shared lib;
+# OUTPUT_NAME hex9 → libhex9.a. OpenMP is intentionally NOT linked here so the
+# archive has no external runtime dependency (serial-correct; the batch pragmas
+# are no-ops without -fopenmp), keeping the -sys link line trivial.
+add_library(hex9Static STATIC
+  hex9_c.cpp
+  core/h9_warp_runtime.cpp
+  core/h9_warp_embedded.cpp)
+target_include_directories(hex9Static
+  PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)
+target_compile_definitions(hex9Static PRIVATE
+  H9_WARP_ENABLE=1
+  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}")
+set_target_properties(hex9Static PROPERTIES OUTPUT_NAME hex9 POSITION_INDEPENDENT_CODE ON)
+
 # ── install (cross-platform) ────────────────────────────────────────────────
-install(TARGETS hex9
+install(TARGETS hex9 hex9Static
   LIBRARY        DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE        DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME        DESTINATION ${CMAKE_INSTALL_BINDIR}

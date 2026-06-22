@@ -47,16 +47,40 @@ static inline void encode_one(double lon, double lat, uint8_t out[16]) {
         H9BOct b = h9_lonlatdeg_to_boct(lon, lat);
         h9_boct_to_uuid(b, out);
     }
+#if !H9_HAS_HTERM
+    /* Reclaimed layout: there is no h_term, so the deepest address IS the
+     * canonical max-depth bin — "address vs bin" has dissolved. Canonicalise
+     * the descent's full uuid to the mode-0 home with the 3-bit tail (r_mo |
+     * p_c2, p_mo pinned 0) via the identity round-trip, so encode emits exactly
+     * what bin(.,H9_LMAX) would. L30 cells are sub-micron, so this is lossless
+     * in practice (the round-trip stays well under 1 um). */
+    {
+        h9kring::H9CellId id;
+        if (h9kring::identity_from_uuid(out, H9_LMAX, &id))
+            h9kring::identity_to_uuid(id, H9_LMAX, out);
+    }
+#endif
 }
 static inline void decode_one(const uint8_t uuid[16], double *lon, double *lat) {
     /* Bin UUIDs decode to the cell's geographic centroid via the exact
      * identity path (grid convention — coherent with h9_grid/h9_cell/labels
-     * for every encoding flavour). Full UUIDs keep the beam backward walk
-     * (the representative point of the L29 address). */
+     * for every encoding flavour), which already realises the canonical
+     * terminal (p_mo=0, centroid t_cell). Legacy full UUIDs keep the beam
+     * backward walk (the representative point of the L29 address).
+     *
+     * Reclaimed layout: there is no h_term, so a max-depth UUID IS a bin — its
+     * deepest body nibble (H9_NIB_BODYTOP) is a real digit, not a sentinel.
+     * Route it through the SAME identity/centroid path so L30 decodes exactly
+     * like every shallower bin (no boct-walk special-case). */
     uint8_t nib[32];
     h9a_unpack(uuid, nib);
-    if (nib[30] == 0x0Fu) {
-        int bl = 30;
+#if H9_HAS_HTERM
+    const bool is_bin = (nib[H9_NIB_TAIL - 1] == 0x0Fu);
+#else
+    const bool is_bin = true;
+#endif
+    if (is_bin) {
+        int bl = H9_NIB_BODYTOP;
         while (bl >= 0 && nib[bl] == 0x0Fu) bl--;
         h9kring::H9CellId id;
         if (bl >= 0 && h9kring::identity_from_uuid(uuid, bl, &id) &&
@@ -70,6 +94,10 @@ static inline void decode_one(const uint8_t uuid[16], double *lon, double *lat) 
 
 extern "C" const char *hex9_version(void) {
     return "libhex9 0.1.0 (" __DATE__ " " __TIME__ ")";
+}
+
+extern "C" int hex9_lmax(void) {
+    return H9_LMAX;   /* 29 on HEX9_USE_L29 (legacy), 30 when reclaimed */
 }
 
 extern "C" int hex9_warp_init(char *errbuf, size_t errlen) {
@@ -108,6 +136,23 @@ extern "C" int hex9_decode(const uint8_t uuid[16], double *lon, double *lat) {
  * (malformed input, or a bin fed below its own layer) falls back to the
  * legacy nibble bin. */
 static void canonical_bin(const uint8_t uuid[16], int layer, uint8_t out[16]) {
+    if (layer == 0) {
+        /* L0 bin = the root hex itself (no split ambiguity), canonicalised to
+         * the mode-0 octant rep: keep nibble[0], sentinel the body, and write
+         * the canonical key_tail (c2_canon<<1, r_mo=p_mo=0). Matches Python
+         * h9_bin_pts' L0 branch; the general h9_bin_uuid path corrupts the root
+         * nibble at layer 0. Malformed root (>11) falls through to legacy. */
+        uint8_t nib[32];
+        h9a_unpack(uuid, nib);
+        if (nib[0] <= 11) {
+            uint8_t obn[32];
+            obn[0] = nib[0];
+            for (int i = 1; i <= H9_NIB_TAIL - 1; ++i) obn[i] = 0x0Fu;
+            obn[H9_NIB_TAIL] = (uint8_t)((H9_L0HEX_BACK[nib[0]][0][1] & 3u) << 1);
+            h9a_pack(obn, out);
+            return;
+        }
+    }
     if (layer >= 1) {
         h9kring::H9CellId id;
         if (h9kring::identity_from_uuid(uuid, layer, &id)) {
@@ -119,7 +164,7 @@ static void canonical_bin(const uint8_t uuid[16], int layer, uint8_t out[16]) {
 }
 
 extern "C" int hex9_bin(const uint8_t uuid[16], int layer, uint8_t out_uuid[16]) {
-    if (layer < 0 || layer > 29) return 1;
+    if (layer < 0 || layer > H9_LMAX) return 1;
     canonical_bin(uuid, layer, out_uuid);
     return 0;
 }
@@ -146,7 +191,7 @@ extern "C" int hex9_decode_many(const uint8_t *uuid, size_t n,
 
 extern "C" int hex9_bin_many(const uint8_t *uuid, int layer, size_t n,
                              uint8_t *out_uuid) {
-    if (layer < 0 || layer > 29) return 1;
+    if (layer < 0 || layer > H9_LMAX) return 1;
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static)
     for (ptrdiff_t i = 0; i < N; ++i)
@@ -211,7 +256,7 @@ static int write_label(const uint8_t nibbles[32], int layer, char *buf) {
  * full UUID (the load-bearer) and is a downstream concern. The full UUID is
  * decoded to its canonical bin first so label(full) == label(h9_bin(full)). */
 extern "C" int hex9_label(const uint8_t uuid[16], int layer, char *buf, size_t buflen) {
-    if (layer < 0 || layer > 29 || !buf) return -1;
+    if (layer < 0 || layer > H9_LMAX || !buf) return -1;
     uint8_t cb[16], nibbles[32];
     canonical_bin(uuid, layer, cb);
     h9a_unpack(cb, nibbles);
@@ -222,7 +267,7 @@ extern "C" int hex9_label(const uint8_t uuid[16], int layer, char *buf, size_t b
 }
 
 extern "C" int hex9_label_key(const uint8_t uuid[16], int layer, char *buf, size_t buflen) {
-    if (layer < 0 || layer > 29 || !buf) return -1;
+    if (layer < 0 || layer > H9_LMAX || !buf) return -1;
     /* Canonical bin: it is a bin (nibble[30]==0xF), so nibble[31] already holds
      * the layer's key tail (c2<<1 | oct_mode) — no backward walk, and no c_mo
      * display bit (the canonical mode-0 home is unambiguous, so GIS exports no
@@ -254,7 +299,7 @@ static int label_body_to_nibbles(const char *label, uint8_t nibbles[32],
     static const char H9D[] = "0123456789ab";
     int len = 0;
     while (label[len] && label[len] != '.') len++;
-    if (len < 1 || len > 30) return -1;
+    if (len < 1 || len > H9_NIB_BODYTOP + 1) return -1;   /* body L0..L{BODYTOP} */
     for (int i = 0; i < len; i++) {
         const char *p = (const char *)std::memchr(H9D, label[i], 12);
         if (!p) return -1;
@@ -262,7 +307,7 @@ static int label_body_to_nibbles(const char *label, uint8_t nibbles[32],
         if (i > 0 && d > 8) return -1;        /* layers 1+ use digits 0..8 */
         nibbles[i] = (uint8_t)d;
     }
-    for (int i = len; i <= 30; i++) nibbles[i] = 0x0Fu;
+    for (int i = len; i <= H9_NIB_TAIL - 1; i++) nibbles[i] = 0x0Fu;
     *tail_out = (label[len] == '.') ? label + len + 1 : nullptr;
     return len - 1;
 }
@@ -334,7 +379,7 @@ extern "C" int hex9_label_centroid(const char *label, double *lon, double *lat) 
 
 extern "C" int hex9_common_ancestor(const uint8_t *uuids, size_t n, int layer,
                                     char *buf, size_t buflen, uint8_t *out_uuid) {
-    if (!uuids || n == 0 || layer < 0 || layer > 29 || !buf) return -1;
+    if (!uuids || n == 0 || layer < 0 || layer > H9_LMAX || !buf) return -1;
     uint8_t first[16], fnib[32];
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuids, layer, &id)) return -1;
@@ -374,8 +419,8 @@ extern "C" int hex9_common_ancestor(const uint8_t *uuids, size_t n, int layer,
 
 extern "C" int hex9_cell_ring(const uint8_t uuid[16], int layer, int densify,
                               double *out_lonlat, int max_points) {
-    if (layer < 1 || layer > 29) return -1;
-    if (densify < 0 || densify > 9 || layer + densify > 29) return -1;
+    if (layer < 1 || layer > H9_LMAX) return -1;
+    if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
     const int n_ring = hex9_ring_npoints(densify);
     if (!out_lonlat || max_points < n_ring) return -1;
 
@@ -410,8 +455,8 @@ extern "C" hex9_grid *hex9_grid_create(double lon_min, double lat_min,
         if (errbuf && errlen) { std::strncpy(errbuf, m, errlen - 1); errbuf[errlen - 1] = '\0'; }
         return nullptr;
     };
-    if (layer < 1 || layer > 29) return fail("layer must be 1..29");
-    if (densify < 0 || densify > 9 || layer + densify > 29) return fail("invalid densify");
+    if (layer < 1 || layer > H9_LMAX) return fail("layer must be 1..29");
+    if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return fail("invalid densify");
 
     hex9_grid *g = new hex9_grid;
     g->layer = layer;
@@ -437,7 +482,7 @@ extern "C" void hex9_grid_cell_centroid(const hex9_grid *g, int i, double *lon, 
 
 extern "C" int hex9_grid_cell_ring(const hex9_grid *g, int i, int densify,
                                    double *out_lonlat, int max_points) {
-    if (densify < 0 || densify > 9 || g->layer + densify > 29) return -1;
+    if (densify < 0 || densify > 9 || g->layer + densify > H9_LMAX) return -1;
     const int n_ring = hex9_ring_npoints(densify);
     if (!out_lonlat || max_points < n_ring) return -1;
     const H9GridCell &c = g->cells[(size_t)i];
@@ -476,8 +521,12 @@ extern "C" hex9_adaptive *hex9_adaptive_create(const uint8_t *uuids,
         return nullptr;
     };
     if (!uuids) return fail("uuids must not be NULL");
-    if (min_layer < 0 || max_layer > 29 || min_layer > max_layer)
-        return fail("need 0 <= min_layer <= max_layer <= 29");
+    if (min_layer < 0 || max_layer > H9_LMAX || min_layer > max_layer) {
+        char msg[80];
+        std::snprintf(msg, sizeof msg,
+                      "need 0 <= min_layer <= max_layer <= %d", H9_LMAX);
+        return fail(msg);
+    }
     if (!(ceiling > 0.0)) return fail("ceiling must be > 0");
     if (!(floor_ >= 0.0) || floor_ > ceiling) return fail("need 0 <= floor <= ceiling");
 
@@ -605,7 +654,7 @@ extern "C" void hex9_adaptive_destroy(hex9_adaptive *a) { delete a; }
  * UUID for deterministic results (matches the grid enumeration convention). */
 
 extern "C" int hex9_neighbors(const uint8_t uuid[16], int layer, uint8_t *out_uuids) {
-    if (!out_uuids || layer < 1 || layer > 29) return -1;
+    if (!out_uuids || layer < 1 || layer > H9_LMAX) return -1;
     if ((uuid[15] >> 4) == 0x0Fu) return -1;   /* bin input: keys, not addresses */
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuid, layer, &id)) return -1;
@@ -632,7 +681,7 @@ extern "C" int64_t hex9_disk_ncells(int k) {
 /* Shared k_ring/k_disk body: BFS, filter, sort by UUID. */
 static int64_t kring_common(const uint8_t uuid[16], int layer, int k,
                             uint8_t *out_uuids, int64_t max_cells, bool ring_only) {
-    if (k < 0 || !out_uuids || max_cells <= 0 || layer < 1 || layer > 29) return -1;
+    if (k < 0 || !out_uuids || max_cells <= 0 || layer < 1 || layer > H9_LMAX) return -1;
     if ((uuid[15] >> 4) == 0x0Fu) return -1;   /* bin input: keys, not addresses */
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuid, layer, &id)) return -1;

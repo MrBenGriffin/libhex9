@@ -37,6 +37,7 @@
  */
 
 #pragma once
+#include "h9_layout.h"   /* H9_LMAX, H9_DESC_MAX, ... (HEX9_USE_L29 gate) */
 #include <cstdint>
 #include <limits>
 #include <math.h>

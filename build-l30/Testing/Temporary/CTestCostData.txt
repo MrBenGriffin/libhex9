@@ -1,0 +1,12 @@
+smoke 4 0.137751
+batch 3 0.250932
+grid 4 0.148444
+kring 3 0.190695
+labels 4 0.146782
+adaptive 4 0.202189
+cellgeom 4 0.176532
+bin_prefix_guard 4 0.268485
+full_id 4 0.231188
+gc_kring 4 5.27234
+smoke_py 4 0.339057
+---

@@ -48,6 +48,7 @@ extern "C" {
  * returns non-zero (the caller may fall back to the identity warp).
  */
 const char *hex9_version(void);                       /* libhex9 build/version string */
+int         hex9_lmax(void);                          /* deepest addressable layer (29 legacy / 30) */
 int         hex9_warp_init(char *errbuf, size_t errlen);
 
 /* Runtime toggles, mirroring the extension GUCs. Safe to call any time. */

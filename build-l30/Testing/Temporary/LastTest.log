@@ -1,0 +1,261 @@
+Start testing: Jun 21 18:37 BST
+----------------------------------------------------------
+1/11 Testing: smoke
+1/11 Test: smoke
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/smoke"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"smoke" start time: Jun 21 18:37 BST
+Output:
+----------------------------------------------------------
+libhex9 0.1.0 (Jun 21 2026 18:29:33)
+warp init OK
+uuid: 43217747851758518371456873133671
+in (-3.190000, 55.950000) -> out (-3.190000, 55.950000)  |dlon|=1.75e-13 |dlat|=6.39e-14
+round-trip OK
+label(L8)=432177468  label_key(L8)=432177468.3  (len 9/11)
+label OK
+rebin OK
+cell_ring(L8,d0): n=7 v0=(-3.1991476, 55.9495013) closed=1
+binned uuid: 432177468ffffffffffffffffffffff3
+cell_ring(L8,d1): n=19
+cell_ring OK
+<end of output>
+Test time =   0.55 sec
+----------------------------------------------------------
+Test Passed.
+"smoke" end time: Jun 21 18:38 BST
+"smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/11 Testing: batch
+2/11 Test: batch
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/batch"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"batch" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+N=20000  scalar=0.085s  batch=0.084s  speedup=1.0x  mismatched_bytes=0  rt_max=2.26e-12 deg
+BATCH OK
+<end of output>
+Test time =   0.75 sec
+----------------------------------------------------------
+Test Passed.
+"batch" end time: Jun 21 18:38 BST
+"batch" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/11 Testing: grid
+3/11 Test: grid
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/grid"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"grid" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+grid L8 bbox(-0.30,51.30,0.10,51.70) count=1247
+cell0 uuid=434836201ffffffffffffffffffffff0 centroid=(0.0653737, 51.6680555) ring_n=7 v0=(0.0560285, 51.6657607)
+<end of output>
+Test time =   0.59 sec
+----------------------------------------------------------
+Test Passed.
+"grid" end time: Jun 21 18:38 BST
+"grid" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/11 Testing: kring
+4/11 Test: kring
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/kring"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"kring" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+KRING OK
+<end of output>
+Test time =   0.57 sec
+----------------------------------------------------------
+Test Passed.
+"kring" end time: Jun 21 18:38 BST
+"kring" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/11 Testing: labels
+5/11 Test: labels
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/labels"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"labels" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+LABELS OK
+<end of output>
+Test time =   0.59 sec
+----------------------------------------------------------
+Test Passed.
+"labels" end time: Jun 21 18:38 BST
+"labels" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/11 Testing: adaptive
+6/11 Test: adaptive
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/adaptive"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"adaptive" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+uniform: 7525 cells over layers L3:7516 L4:9
+ADAPTIVE OK
+<end of output>
+Test time =   0.81 sec
+----------------------------------------------------------
+Test Passed.
+"adaptive" end time: Jun 21 18:38 BST
+"adaptive" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/11 Testing: cellgeom
+7/11 Test: cellgeom
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/cellgeom"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"cellgeom" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+westminster-L8: 2 cells coherent (d0+d1 rings, centroids)
+london-L8: 1247 cells coherent (d0+d1 rings, centroids)
+equator-meridian-L5: 1022 cells coherent (d0+d1 rings, centroids)
+polar-L4: 150 cells coherent (d0+d1 rings, centroids)
+fine-L12: 1290 cells coherent (d0+d1 rings, centroids)
+CELLGEOM OK
+<end of output>
+Test time =   0.71 sec
+----------------------------------------------------------
+Test Passed.
+"cellgeom" end time: Jun 21 18:38 BST
+"cellgeom" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/11 Testing: bin_prefix_guard
+8/11 Test: bin_prefix_guard
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/bin_prefix_guard"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"bin_prefix_guard" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+  split-hex divergence @L4  pt=(-31.3782,22.1677)
+    canonical (k_disk from full) = 21047
+    prefix-cut  of L12 label      = 21007  <-- WRONG
+    hex9_bin    (nibble trust)    = 21047  (ok)
+  split-hex divergence @L8  pt=(64.8532,-80.5411)
+    canonical (k_disk from full) = a27884077
+    prefix-cut  of L12 label      = a27884037  <-- WRONG
+    hex9_bin    (nibble trust)    = a27884077  (ok)
+  split-hex divergence @L1  pt=(-51.5692,4.9129)
+    canonical (k_disk from full) = 67
+    prefix-cut  of L12 label      = 27  <-- WRONG
+    hex9_bin    (nibble trust)    = 67  (ok)
+  split-hex divergence @L6  pt=(-51.5692,4.9129)
+    canonical (k_disk from full) = 2756206
+    prefix-cut  of L12 label      = 2756236  <-- WRONG
+    hex9_bin    (nibble trust)    = 2756206  (ok)
+  split-hex divergence @L4  pt=(106.5178,-18.5517)
+    canonical (k_disk from full) = 84347
+    prefix-cut  of L12 label      = 84307  <-- WRONG
+    hex9_bin    (nibble trust)    = 84347  (ok)
+  split-hex divergence @L3  pt=(103.7994,-73.5769)
+    canonical (k_disk from full) = 9806
+    prefix-cut  of L12 label      = 9836  <-- WRONG
+    hex9_bin    (nibble trust)    = 9806  (ok)
+  split-hex divergence @L4  pt=(103.7994,-73.5769)
+    canonical (k_disk from full) = 98307
+    prefix-cut  of L12 label      = 98367  <-- WRONG
+    hex9_bin    (nibble trust)    = 98307  (ok)
+  split-hex divergence @L1  pt=(-28.1761,35.2723)
+    canonical (k_disk from full) = 27
+    prefix-cut  of L12 label      = 47  <-- WRONG
+    hex9_bin    (nibble trust)    = 27  (ok)
+
+bin-prefix guard: 120000 (point,layer) pairs checked
+  label prefix-cut wrong       : 24573 (20.477%)
+  hex9_bin != canonical bin    : 0 (0.000%)
+
+DIRECTIVE: to COARSEN, re-bin from the FULL uuid — hex9_bin / hex9_k_disk
+  (C) or h9_bin / h9_kdisk (SQL); all are the canonical identity coarsening
+  and == h9_grid. Do NOT prefix-cut a label string (labels are cosmetic and
+  not cross-layer prefix-nested at split-hex 6/7/8: the canonical leaf is the
+  mode-0 parent, whose body differs from the address body). Bins are
+  layer-scoped keys, not nested addresses. See docs/addressing-doctrine.md.
+
+bin-prefix guard OK (0 failures)
+<end of output>
+Test time =   1.07 sec
+----------------------------------------------------------
+Test Passed.
+"bin_prefix_guard" end time: Jun 21 18:38 BST
+"bin_prefix_guard" time elapsed: 00:00:01
+----------------------------------------------------------
+
+9/11 Testing: full_id
+9/11 Test: full_id
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/full_id"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"full_id" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+full_id: OK
+<end of output>
+Test time =   0.92 sec
+----------------------------------------------------------
+Test Passed.
+"full_id" end time: Jun 21 18:38 BST
+"full_id" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/11 Testing: gc_kring
+10/11 Test: gc_kring
+Command: "/Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30/gc_kring"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"gc_kring" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+equator    cells   1600   bin-input rejection OK
+meridian   cells   1600   bin-input rejection OK
+oblique-a  cells   1600   bin-input rejection OK
+oblique-b  cells   1600   bin-input rejection OK
+cells: 6400   probes: 38400 (self 0, ring2-overshoot 0, skipped 0)
+grounding: worst point→nearest-vertex 0.93 circumradii (limit 2.00)
+metric rings: 194 cell·k checks, 58200 blind samples (15 outside disk(k+1), 82 unswept members, 3 anchors skipped: garbled/seam-cliff)
+gc_kring OK
+<end of output>
+Test time =  21.09 sec
+----------------------------------------------------------
+Test Passed.
+"gc_kring" end time: Jun 21 18:38 BST
+"gc_kring" time elapsed: 00:00:21
+----------------------------------------------------------
+
+11/11 Testing: smoke_py
+11/11 Test: smoke_py
+Command: "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12" "/Users/ben/Documents/Projects/GeoPlegma/libhex9/test/smoke.py"
+Directory: /Users/ben/Documents/Projects/GeoPlegma/libhex9/build-l30
+"smoke_py" start time: Jun 21 18:38 BST
+Output:
+----------------------------------------------------------
+version: libhex9 0.1.0 (Jun 21 2026 18:29:33)
+lmax: 30 (29 = legacy layout, 30 = reclaimed h_term)
+encode 100000 pts -> (100000, 16) uint8 in 0.442s (226,309 pts/s, OMP)
+decode round-trip max err: 2.76e-12 deg
+edinburgh uuid: 43217747851758518371456873133671
+bin(layer=8) sample shape: (5, 16) uint8
+cell d0 ring (7, 2), d1 ring (19, 2), v0=(np.float64(-3.1991476), np.float64(55.9495013))
+neighbors: counts=[6], ring1=6, disk2=19
+label: 432177468 centroid=(-3.1890,55.9519) ancestor=432177@L5
+grid: n=1247 uuids(1247, 16) cents(1247, 2) rings(1247, 6, 2)
+grid d1: list of 1247 rings, first (19, 2)
+adaptive: 1729 cells, layers [3], sum=2000
+PY SMOKE OK
+<end of output>
+Test time =   1.36 sec
+----------------------------------------------------------
+Test Passed.
+"smoke_py" end time: Jun 21 18:38 BST
+"smoke_py" time elapsed: 00:00:01
+----------------------------------------------------------
+
+End testing: Jun 21 18:38 BST

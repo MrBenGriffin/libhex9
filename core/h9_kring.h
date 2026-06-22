@@ -288,7 +288,7 @@ static inline bool cid_offset_int(uint8_t cid, int *u, int *v) {
  * half, and we swap to the partner when it points the other way. */
 static inline bool identity_from_uuid(const uint8_t uuid[16], int layer,
                                       H9CellId *out) {
-    if (layer < 0 || layer > 29) return false;   /* layer 0 = the 12 L0 cells */
+    if (layer < 0 || layer > H9_LMAX) return false;   /* layer 0 = the 12 L0 cells */
 
     uint8_t nib[32];
     h9a_unpack(uuid, nib);
@@ -301,21 +301,24 @@ static inline bool identity_from_uuid(const uint8_t uuid[16], int layer,
     int c2;                                       /* leaf slot at `layer` */
     int leaf_mode = 0;                            /* leaf parent mode at `layer` */
 
-    if (nib[30] != 0x0Fu) {
+    if (nib[H9_NIB_TAIL - 1] != 0x0Fu) {
         /* Full UUID — the reversible tail carries the complete meta
-         * (tail.py: p_mo in bit 3, p_c2 in bits 1-2, r_mo in bit 0; h_term
-         * in nibble[30]), so the registration walk is DETERMINISTIC, the
-         * mirror of Python h9_dec/hex_digits_reg: seed (c_mo, c2) from the
-         * tail and walk L29 -> 1.  The context (c2) on arriving at `layer`
-         * is the leaf slot — the same value h9_bin_uuid emits as the bin
-         * key c2.  (The former path normalised to a bin first, discarding
-         * p_mo, then guessed it back via L0-closure — the F2 mis-location
-         * of meta-bearing cells in docs/addressing-doctrine.md.) */
+         * (tail.py: p_mo in bit 3, p_c2 in bits 1-2, r_mo in bit 0), so the
+         * registration walk is DETERMINISTIC, the mirror of Python
+         * h9_dec/hex_digits_reg: seed (c_mo, c2) from the tail and walk the
+         * deepest body level (H9_NIB_BODYTOP) -> 1.  On the legacy layout the
+         * unused h_term nibble is skipped (the seed already encodes its
+         * context); on the reclaimed layout H9_NIB_BODYTOP is body[30] and is
+         * inverted like any other body nibble — this is exactly why h_term was
+         * redundant.  The context (c2) on arriving at `layer` is the leaf slot —
+         * the same value h9_bin_uuid emits as the bin key c2.  (The former path
+         * normalised to a bin first, discarding p_mo, then guessed it back via
+         * L0-closure — the F2 mis-location of meta-bearing cells.) */
         uint8_t c_mo = (nib[31] >> 3) & 1u;
         uint8_t c2w  = (nib[31] >> 1) & 3u;
-        int slot = (int)c2w;                      /* layer == 29 case */
+        int slot = (int)c2w;                      /* layer == H9_NIB_BODYTOP case */
         int smode = (int)c_mo;
-        for (int l = 29; l >= 1; --l) {
+        for (int l = H9_NIB_BODYTOP; l >= 1; --l) {
             if (l == layer) { slot = (int)c2w; smode = (int)c_mo; }
             if (nib[l] > 8) return false;
             const uint8_t *e = H9_HEX_REG[nib[l]][c_mo][c2w];

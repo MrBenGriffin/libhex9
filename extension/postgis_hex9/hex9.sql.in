@@ -28,7 +28,8 @@ CREATE OR REPLACE FUNCTION h9_version()
 -- ── Encode ───────────────────────────────────────────────────────────────────
 
 -- h9_encode(geometry) → uuid
---   Encodes a POINT to a self-contained UUID at layer 29 resolution.
+--   Encodes a POINT to a self-contained UUID at the deepest layer (30; 29 on
+--   the legacy USE_L29 layout). See hex9_lmax().
 --   The UUID carries all decode context internally; no companion byte needed.
 --   Suitable for exact round-trip via h9_decode(), indexing, and h9_bin().
 --
@@ -67,7 +68,8 @@ CREATE OR REPLACE FUNCTION h9_encode_many(geometry[])
 -- h9_decode(uuid) → geometry
 --   Decode a UUID to a POINT geometry (SRID 4326).
 --   Exact round-trip: h9_decode(h9_encode(pt)) recovers the input point
---   to within the resolution of layer 29 (~95 nm cell diameter).
+--   to within the resolution of the deepest layer (layer 30 ≈ 32 nm; layer 29
+--   ≈ 95 nm on the legacy layout).
 --
 --   GUARANTEED for full UUIDs only. Bins are layer-scoped grouping keys,
 --   not addresses; decoding one is a fossil convenience that mis-locates
@@ -85,7 +87,8 @@ CREATE OR REPLACE FUNCTION h9_decode(uuid)
 -- ── Hierarchy ────────────────────────────────────────────────────────────────
 
 -- h9_bin(uuid, integer) → uuid
---   Returns the bin-key UUID at the given layer (0..29).
+--   Returns the bin-key UUID at the given layer (0..lmax; lmax = 30, or 29 on
+--   the legacy USE_L29 layout).
 --   All points in the same H9 cell at layer L produce the same output UUID,
 --   making this safe for GROUP BY aggregation and spatial binning.
 --   Body nibbles above layer are replaced with the 0xF sentinel; nibble[31]

@@ -142,8 +142,8 @@ static inline void normalize_ring(double *lons, double *lats, int n_ring) {
  * hex9_grid_cell_ring. Returns the point count, or -1 on error. */
 static inline int identity_ring(const h9kring::H9CellId &id, int layer, int densify,
                                 double *lons, double *lats) {
-    if (layer < 0 || layer > 29) return -1;
-    if (densify < 0 || densify > 9 || layer + densify > 29) return -1;
+    if (layer < 0 || layer > H9_LMAX) return -1;
+    if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
     int n_ring = 1;
     for (int i = 0; i < densify; ++i) n_ring *= 3;
     const int v_per_edge = n_ring;

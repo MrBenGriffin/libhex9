@@ -819,7 +819,7 @@ static inline void uuid_from_cxcy_full(double cen_cx, double cen_cy,
     nibbles[0] = H9_L0HEX_BY_ID[oid][c2_l0];
 
     uint8_t last_c2 = 0;
-    for (int ri = 2; ri <= 30; ++ri) {
+    for (int ri = 2; ri <= H9_NIB_BODYTOP + 1; ++ri) {
         const uint8_t gp_mo  = rids[ri-2] & 1u;
         const uint8_t p_rid  = rids[ri-1];
         const uint8_t c_rid  = rids[ri];
@@ -827,9 +827,14 @@ static inline void uuid_from_cxcy_full(double cen_cx, double cen_cy,
         nibbles[ri-1] = entry[0];
         last_c2       = entry[1];
     }
-    nibbles[30] = rids[30];
-    const uint8_t p_mo_final = rids[29] & 1u;
-    nibbles[31] = (uint8_t)((p_mo_final << 3) | (last_c2 << 1) | (uint8_t)oct_mode);
+    /* Legacy stores h_term at H9_NIB_HTERM; the reclaimed layout already wrote
+     * body[H9_NIB_BODYTOP] in the loop above. key_tail carries the (mode, c2)
+     * context one step below the deepest body nibble in both layouts. */
+#if H9_HAS_HTERM
+    nibbles[H9_NIB_HTERM] = rids[H9_NIB_HTERM];
+#endif
+    const uint8_t p_mo_final = rids[H9_NIB_BODYTOP] & 1u;
+    nibbles[H9_NIB_TAIL] = (uint8_t)((p_mo_final << 3) | (last_c2 << 1) | (uint8_t)oct_mode);
     h9a_pack(nibbles, out);
 }
 
@@ -1039,6 +1044,16 @@ static inline void uuid_from_iauv(int oid, int c2, int64_t ia_org, int64_t ib_or
     /* Nibble assembly — identical to uuid_from_cxcy. */
     uint8_t rids[40] = {};
     for (int i = 0; i <= layer + 1; i++) rids[i] = H9_CELL2RID[cids[i]];
+
+    /* Canonical virtual term: below max depth the lookahead child is fixed to
+     * hex '3' (region {6,10,8}[c2] for p_mo=0, {7,11,9}[c2] for p_mo=1) — the
+     * centroid-adjacent half-hex that lets the tail drop to (c2, r_mo). Mirrors
+     * Python reg_hex_digits' hex-3 normalisation (the lattice child from
+     * cids_from_iauv is non-canonical for binning); fixes the terminal body
+     * nibble AND tail c2 together. p_mo = parent rid & 1. */
+    static const uint8_t H9_HEX3[2][3] = {{6, 10, 8}, {7, 11, 9}};
+    if (layer < H9_NIB_BODYTOP)
+        rids[layer + 1] = H9_HEX3[rids[layer] & 1u][c2];
 
     uint8_t nibbles[32];
     const uint8_t c2_l0 = H9_MCC2[oct_mode][cids[1]];
@@ -1338,7 +1353,7 @@ static inline void enumerate(int layer,
                              double lon_max, double lat_max,
                              std::vector<H9GridCell> &out) {
     out.clear();
-    if (layer < 1 || layer > 29) return;
+    if (layer < 1 || layer > H9_LMAX) return;
 
     const double  div_f  = std::pow(3.0, (double)layer);
     const int     levels = layer - 1;
@@ -1419,7 +1434,7 @@ static inline void enumerate(int layer,
  * Used by the L0/L1 foundation tests against Python HexMesh.create(). */
 static inline void enumerate_global(int layer, std::vector<H9GridCell> &out) {
     out.clear();
-    if (layer < 0 || layer > 29) return;
+    if (layer < 0 || layer > H9_LMAX) return;
 
     const double div_f = std::pow(3.0, (double)layer);
 

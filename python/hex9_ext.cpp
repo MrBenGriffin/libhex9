@@ -281,6 +281,7 @@ static nb::tuple adaptive(u8_2d_in uuids, int min_layer, int max_layer,
 NB_MODULE(hex9_ext, m) {
     m.doc() = "libhex9 — Hex9 DGGS fast backend (nanobind + OpenMP).";
     m.def("version", &hex9_version);
+    m.def("lmax", &hex9_lmax, "Deepest addressable layer (29 legacy / 30 reclaimed).");
     m.def("warp_init", &warp_init,
           "Rebuild the authalic-warp state. Done automatically at import; only "
           "needed again after a failed init.");
