@@ -1,2 +1,0 @@
-/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar qc libhex9.a CMakeFiles/hex9Static.dir/hex9_c.cpp.o CMakeFiles/hex9Static.dir/core/h9_warp_runtime.cpp.o CMakeFiles/hex9Static.dir/core/h9_warp_embedded.cpp.o
-/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib libhex9.a
