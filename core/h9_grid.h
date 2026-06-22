@@ -1348,12 +1348,33 @@ static inline void sort_and_dedup_by_uuid(std::vector<H9GridCell> &out) {
 
 /* Enumerate H9 cells at `layer` whose CENTROID lies inside the geographic bbox.
  * Output is sorted by uuid and unique. */
-static inline void enumerate(int layer,
+/* Returns false (with `out` cleared) if a positive `max_cells` budget would be
+ * exceeded — bailing DURING the BFS so a deep whole-world request fails fast
+ * instead of trying to materialise 12·9^layer nodes.  max_cells <= 0 disables
+ * the guard (unbounded). */
+static inline bool enumerate(int layer,
                              double lon_min, double lat_min,
                              double lon_max, double lat_max,
-                             std::vector<H9GridCell> &out) {
+                             std::vector<H9GridCell> &out,
+                             int64_t max_cells = 0) {
     out.clear();
-    if (layer < 1 || layer > H9_LMAX) return;
+    if (layer < 0 || layer > H9_LMAX) return true;
+
+    /* L=0: the 12 base hexagons — the root supercell IS the cell, so skip the
+     * BFS (which assumes layer>=1) and emit each mode-0 octant's root, keeping
+     * the bbox centroid filter so sub-world extents still prune.  Mirrors the
+     * L0 case in enumerate_global(). */
+    if (layer == 0) {
+        std::vector<ClipNode> root = { { 0, 0, 0, 1 } };
+        for (int oid = 0; oid < 8; oid++) {
+            if ((int)H9_OID_MO[oid] != 0) continue;
+            emit_hexes_for_oid(oid, /*layer=*/0, /*div_f=*/1.0, root,
+                               /*apply_bbox_filter=*/true,
+                               lon_min, lat_min, lon_max, lat_max, out);
+        }
+        sort_and_dedup_by_uuid(out);
+        return true;
+    }
 
     const double  div_f  = std::pow(3.0, (double)layer);
     const int     levels = layer - 1;
@@ -1400,7 +1421,9 @@ static inline void enumerate(int layer,
 
             if (depth == levels || q_cur.empty()) break;
 
-            /* expand into 9 children */
+            /* expand into 9 children — bail mid-build if the working set would
+             * exceed the budget, so peak memory stays ~max_cells rather than
+             * the 9× overshoot of a check-after-swap. */
             q_nxt.clear();
             for (size_t qi = 0; qi < q_cur.size(); qi++) {
                 const ClipNode  &nd = q_cur[qi];
@@ -1413,15 +1436,25 @@ static inline void enumerate(int layer,
                                       nd.ib + (int64_t)ofs_nd[k][1] * ks,
                                       ks });
                 }
+                if (max_cells > 0 && (int64_t)q_nxt.size() > max_cells) {
+                    out.clear();
+                    return false;
+                }
             }
             q_cur.swap(q_nxt);
         }
 
         emit_hexes_for_oid(oid, layer, div_f, q_cur, /*apply_bbox_filter=*/true,
                            lon_min, lat_min, lon_max, lat_max, out);
+
+        if (max_cells > 0 && (int64_t)out.size() > max_cells) {
+            out.clear();
+            return false;
+        }
     } /* oid loop */
 
     sort_and_dedup_by_uuid(out);
+    return true;
 }
 
 /* Enumerate the full *unbounded* global H9 mesh at `layer`.

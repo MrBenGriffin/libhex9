@@ -19,6 +19,7 @@
 
 #include <cstring>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstdio>
 #include <cmath>
@@ -419,7 +420,7 @@ extern "C" int hex9_common_ancestor(const uint8_t *uuids, size_t n, int layer,
 
 extern "C" int hex9_cell_ring(const uint8_t uuid[16], int layer, int densify,
                               double *out_lonlat, int max_points) {
-    if (layer < 1 || layer > H9_LMAX) return -1;
+    if (layer < 0 || layer > H9_LMAX) return -1;
     if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
     const int n_ring = hex9_ring_npoints(densify);
     if (!out_lonlat || max_points < n_ring) return -1;
@@ -455,13 +456,18 @@ extern "C" hex9_grid *hex9_grid_create(double lon_min, double lat_min,
         if (errbuf && errlen) { std::strncpy(errbuf, m, errlen - 1); errbuf[errlen - 1] = '\0'; }
         return nullptr;
     };
-    if (layer < 1 || layer > H9_LMAX) return fail("layer must be 1..29");
+    if (layer < 0 || layer > H9_LMAX) {
+        char m[32];
+        std::snprintf(m, sizeof m, "layer must be 0..%d", H9_LMAX);
+        return fail(m);
+    }
     if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return fail("invalid densify");
 
     hex9_grid *g = new hex9_grid;
     g->layer = layer;
-    h9grid::enumerate(layer, lon_min, lat_min, lon_max, lat_max, g->cells);
-    if (max_cells > 0 && (int64_t)g->cells.size() > max_cells) {
+    // enumerate bails mid-BFS once the budget is exceeded, so a deep whole-world
+    // request fails fast here instead of materialising 12·9^layer nodes.
+    if (!h9grid::enumerate(layer, lon_min, lat_min, lon_max, lat_max, g->cells, max_cells)) {
         delete g;
         return fail("cell count exceeds max_cells");
     }
@@ -654,7 +660,7 @@ extern "C" void hex9_adaptive_destroy(hex9_adaptive *a) { delete a; }
  * UUID for deterministic results (matches the grid enumeration convention). */
 
 extern "C" int hex9_neighbors(const uint8_t uuid[16], int layer, uint8_t *out_uuids) {
-    if (!out_uuids || layer < 1 || layer > H9_LMAX) return -1;
+    if (!out_uuids || layer < 0 || layer > H9_LMAX) return -1;
     if ((uuid[15] >> 4) == 0x0Fu) return -1;   /* bin input: keys, not addresses */
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuid, layer, &id)) return -1;
@@ -681,7 +687,7 @@ extern "C" int64_t hex9_disk_ncells(int k) {
 /* Shared k_ring/k_disk body: BFS, filter, sort by UUID. */
 static int64_t kring_common(const uint8_t uuid[16], int layer, int k,
                             uint8_t *out_uuids, int64_t max_cells, bool ring_only) {
-    if (k < 0 || !out_uuids || max_cells <= 0 || layer < 1 || layer > H9_LMAX) return -1;
+    if (k < 0 || !out_uuids || max_cells <= 0 || layer < 0 || layer > H9_LMAX) return -1;
     if ((uuid[15] >> 4) == 0x0Fu) return -1;   /* bin input: keys, not addresses */
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuid, layer, &id)) return -1;
