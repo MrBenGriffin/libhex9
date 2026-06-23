@@ -313,11 +313,14 @@ static inline void lonlatdeg_to_cxcy_oid(double lon_deg, double lat_deg,
                                          double *cx, double *cy, int *oid_out) {
     const H9BOct bc = h9_lonlatdeg_to_boct(lon_deg, lat_deg);
 
-    /* oid is determined by sign of each axis — same bit packing as h9_math.h:
-     *   bit0 = (u < 0), bit1 = (v < 0), bit2 = (w < 0). */
-    const int oid = ((bc.u < 0.0) ? 1 : 0)
-                  | ((bc.v < 0.0) ? 2 : 0)
-                  | ((bc.w < 0.0) ? 4 : 0);
+    /* oid is the canonical octant id already computed by h9_lonlatdeg_to_boct
+     * (Python H9O.oid convention). Use it directly — do NOT re-derive from the
+     * signs of bc.u/v/w. On a seam/vertex the solve canonicalises oct_i to a
+     * mode-0 octant (even popcount) and the axis shortcuts zero the off-axis
+     * components, so sign-rederivation would drop that flip (e.g. an equator
+     * axis vertex would come back mode-1). Off-seam, bc.oct_i equals the
+     * sign-derived value, so this is identical for interior points. */
+    const int oid = bc.oct_i;
     *oid_out = oid;
 
     /* Invert the per-oid matrix.  H9_BRAW_M is orthogonal (Python validates
@@ -1103,9 +1106,14 @@ static inline void full_id_from_cell(double cen_cx, double cen_cy,
     const double org_cy = (double)ib * H9_UV_V3 / div_f;
     const double in_cx  = cen_cx + NUDGE * (org_cx - cen_cx);
     const double in_cy  = cen_cy + NUDGE * (org_cy - cen_cy);
-    /* Raw lattice (cx,cy) → b_oct frame; uuid_from_cxcy applies warp_inv. */
-    double bx, by;
+    /* Raw lattice (cx,cy) → b_oct frame; uuid_from_cxcy applies warp_inv.
+     * Guarded like the other warp_fwd call sites (see line ~148 and
+     * h9_addressing.h): when H9_WARP_ENABLE is 0 the shim isn't compiled,
+     * so fall back to identity (matches the runtime-disabled shim). */
+    double bx = in_cx, by = in_cy;
+#if H9_WARP_ENABLE
     h9_warp_fwd(in_cx, in_cy, (int)H9_OID_MO[oid], &bx, &by);
+#endif
     uuid_from_cxcy(bx, by, oid, 29, out);
 }
 

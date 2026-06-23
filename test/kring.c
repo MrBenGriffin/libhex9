@@ -149,7 +149,9 @@ int main(void) {
 
     /* error paths */
     uint8_t buf[7 * 16];
-    CHECK(hex9_neighbors(full, 0, buf) == -1, "layer 0 not rejected");
+    /* L0 (the 12 base cells) is a valid layer — neighbours returns 5 there.
+     * Only out-of-range layers are rejected: negative below, > lmax above. */
+    CHECK(hex9_neighbors(full, -1, buf) == -1, "negative layer not rejected");
     CHECK(hex9_neighbors(full, hex9_lmax() + 1, buf) == -1, "layer > lmax not rejected");
     CHECK(hex9_k_disk(full, 8, 1, buf, 6) == -1, "undersized buffer not rejected");
     CHECK(hex9_k_ring(full, 8, 0, buf, 7) == 1, "ring(0) should be the cell itself");

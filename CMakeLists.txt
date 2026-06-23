@@ -143,35 +143,35 @@ add_test(NAME gc_kring COMMAND gc_kring)
 
 # Dev tool: derives/validates the k-ring seam algebra against the geometric
 # mesh (not part of the default build or test suite — run by hand).
-add_executable(kring_probe EXCLUDE_FROM_ALL tools/kring_probe.cpp)
+add_executable(kring_probe EXCLUDE_FROM_ALL tools/diagnosis/kring_probe.cpp)
 target_include_directories(kring_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)
 
 # Dev probe: claim-1 measurement (origin-descent full UUID decode vs centroid)
 # and the h9_bin(full,L)==bin acceptance check. Run by hand.
-add_executable(full_uuid_probe EXCLUDE_FROM_ALL tools/full_uuid_probe.cpp)
+add_executable(full_uuid_probe EXCLUDE_FROM_ALL tools/diagnosis/full_uuid_probe.cpp)
 target_include_directories(full_uuid_probe PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core)
 target_link_libraries(full_uuid_probe PRIVATE hex9)
 
 # Dev probe: re-measure NN vs containment encoder disagreement. Run by hand.
-add_executable(encoder_ab_probe EXCLUDE_FROM_ALL tools/encoder_ab_probe.cpp)
+add_executable(encoder_ab_probe EXCLUDE_FROM_ALL tools/diagnosis/encoder_ab_probe.cpp)
 target_include_directories(encoder_ab_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(encoder_ab_probe PRIVATE hex9)
 
 # Dev probe: PROTOTYPE 2D-Newton encoder inversion vs the beam. Run by hand.
-add_executable(newton_probe EXCLUDE_FROM_ALL tools/newton_probe.cpp)
+add_executable(newton_probe EXCLUDE_FROM_ALL tools/diagnosis/newton_probe.cpp)
 target_include_directories(newton_probe PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core)
 target_link_libraries(newton_probe PRIVATE hex9)
 
 # Dev probe: stress the 2D-Newton inversion at the octant hot zones. Run by hand.
-add_executable(newton_hotzones EXCLUDE_FROM_ALL tools/newton_hotzones.cpp)
+add_executable(newton_hotzones EXCLUDE_FROM_ALL tools/diagnosis/newton_hotzones.cpp)
 target_include_directories(newton_hotzones PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core)
 target_link_libraries(newton_hotzones PRIVATE hex9)
 
 # Dev probe: verify + benchmark the analytic-Jacobian inversion. Run by hand.
-add_executable(newton_aj_probe EXCLUDE_FROM_ALL tools/newton_aj_probe.cpp)
+add_executable(newton_aj_probe EXCLUDE_FROM_ALL tools/diagnosis/newton_aj_probe.cpp)
 target_include_directories(newton_aj_probe PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core)
 target_link_libraries(newton_aj_probe PRIVATE hex9)

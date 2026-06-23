@@ -178,15 +178,25 @@ struct H9BOct {
 /*     1 = odd  number of negative axes = up   (su·sv·sw < 0)                 */
 
 template <typename T> uint8_t oid(T x, T y, T z) {
-	const T tiny = std::numeric_limits<T>::min();
-	if (x == T(0.0)) x = tiny;
-	if (y == T(0.0)) y = tiny;
-	if (z == T(0.0)) z = tiny;
-	return static_cast<uint8_t>(
+	/* A coordinate exactly on a seam (== 0) has a "free" axis bit; the design
+	 * convention is that on-seam points belong to a mode-0 octant (even popcount).
+	 * So rather than forcing zeros to the positive side, set the free bit(s) to
+	 * make the popcount even: negatives set the bit, zeros default to 0, and the
+	 * highest zero axis is flipped up only when needed to reach even parity.
+	 * (Mirrors Python CompositeDomain.binning.) Interior points are unaffected. */
+	const bool zx = (x == T(0.0)), zy = (y == T(0.0)), zz = (z == T(0.0));
+	uint8_t o = static_cast<uint8_t>(
 		((z < T(0.0)) << 2) |
 		((y < T(0.0)) << 1) |
 		 (x < T(0.0))
 	);
+	const uint8_t parity = (o ^ (o >> 1) ^ (o >> 2)) & 1;   /* mode(o) */
+	if (parity && (zx || zy || zz)) {
+		if      (zz) o |= 0x4;   /* flip highest zero axis -> even popcount */
+		else if (zy) o |= 0x2;
+		else         o |= 0x1;
+	}
+	return o;
 }
 
 static uint8_t mode(uint8_t oid) {
@@ -408,10 +418,12 @@ static H9BOct h9_lonlat_to_boct_beam(double lon_rad, double lat_rad) {
 	result.oct_mode = mode(result.oct_i);
 
 	/* Axis sign values — used in beam search (h9_coct_to_lonlat) and final
-	 * result assignment. Separate from oct_i bit encoding. */
-	const double su = (eX >= 0.0) ? 1.0 : -1.0;
-	const double sv = (eY >= 0.0) ? 1.0 : -1.0;
-	const double sw = (eZ >= 0.0) ? 1.0 : -1.0;
+	 * result assignment. Derived from oct_i (NOT eX>=0) so a seam point whose
+	 * oid() flipped the free axis to mode-0 carries a matching sign frame;
+	 * off-seam (no zero coord) this equals (eX>=0?1:-1) exactly. */
+	const double su = (result.oct_i & 1) ? -1.0 : 1.0;
+	const double sv = (result.oct_i & 2) ? -1.0 : 1.0;
+	const double sw = (result.oct_i & 4) ? -1.0 : 1.0;
 
     /* Axis-vertex shortcut: snap to the exact vertex when the TANGENTIAL
      * (off-axis) distance² is within H9_BOCT_VERTEX_TAN2 — linear capture, see
@@ -679,9 +691,13 @@ static H9BOct h9_lonlat_to_boct(double lon_rad, double lat_rad) {
     h9_rad_lonlat_to_ecef(lon_rad, lat_rad, &eX, &eY, &eZ);
     result.oct_i    = oid(eX, eY, eZ);
     result.oct_mode = mode(result.oct_i);
-    const double su = (eX >= 0.0) ? 1.0 : -1.0;
-    const double sv = (eY >= 0.0) ? 1.0 : -1.0;
-    const double sw = (eZ >= 0.0) ? 1.0 : -1.0;
+    /* Derive the solve signs from oct_i, NOT from eX>=0: on a seam (a coord ==0)
+     * oid() may flip the free axis bit to land mode-0, and the sign frame must
+     * follow that choice or oct_i and the coords disagree. Off-seam (no zero
+     * coord) oid() never flips, so this is identical to (eX>=0?1:-1) there. */
+    const double su = (result.oct_i & 1) ? -1.0 : 1.0;
+    const double sv = (result.oct_i & 2) ? -1.0 : 1.0;
+    const double sw = (result.oct_i & 4) ? -1.0 : 1.0;
 
     /* pole / axis shortcuts — tangential-distance² capture, identical to the
      * beam (see H9_BOCT_VERTEX_TAN2 note; was the quadratic |e|−A < 1e-9). */
