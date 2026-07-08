@@ -1080,7 +1080,8 @@ static inline void uuid_from_iauv(int oid, int c2, int64_t ia_org, int64_t ib_or
 
 /* Full (layer-29) IDENTITY UUID for a grid cell — the reversible address that
  * h9_bin(id, L') recovers exactly at every L' <= the cell's layer (unlike a
- * bin, whose own coarsening is the F3 fossil). Construction (see
+ * bin, whose own POINT re-binning is the F3 fossil; the supported CELL-level
+ * roll-up of a bin is h9kring::h9_cell_parent_uuid, h9_kring.h). Construction (see
  * docs/addressing-doctrine.md F4 and tools/full_uuid_probe.cpp):
  *
  *   The hexagon centroid sits ON the internal half-hex seam, so encoding /

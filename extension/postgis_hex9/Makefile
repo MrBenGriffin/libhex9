@@ -1,13 +1,21 @@
 # Makefile — PGXS build for postgis_hex9, the PostGIS Hex9 (H9) extension.
 #
-# Lives inside the libhex9 repository (extension/postgis_hex9/) and compiles
-# the H9 core from ../../core directly — one repo installs both the library
-# and the extension; the core cannot drift from the SQL surface. (PostGIS
-# upstream will not take this into core, so it ships as an independent
-# installable, h3-pg style.)
+# Lives inside the libhex9 repository (extension/postgis_hex9/) and links the
+# CMake-installed libhex9 for the H9 core: only the PostGIS glue
+# (lwgeom_hex9.cpp) is compiled here — it sees ONLY the C ABI in hex9_c.h — and
+# the core (C ABI impl + warp runtime + embedded warp blob, incl. its OpenMP
+# batch loops) comes from the shared libhex9 produced by the top-level build:
+#
+#     cmake -S ../.. -B ../../build && cmake --build ../../build
+#     cmake --install ../../build            # -> $(HEX9_PREFIX)/{lib,include}
+#
+# This keeps the H9 core a single source of truth — the extension can no longer
+# drift from the library — and inherits libhex9's OpenMP-accelerated batch
+# loops. libhex9.{so,dylib} must be present on the DB host at runtime; the rpath
+# below points dyld/ld.so at the install prefix.
 #
 # Usage (from extension/postgis_hex9/):
-#   make
+#   make [HEX9_PREFIX=/your/cmake/install/prefix]
 #   sudo make install
 #   make installcheck   # requires PostgreSQL with postgis already loaded
 
@@ -17,10 +25,10 @@ PGXS        := $(shell $(PG_CONFIG) --pgxs)
 # ── Extension identity ────────────────────────────────────────────────────────
 EXTENSION   = postgis_hex9
 MODULE_big  = postgis_hex9-3
-# Objects live under ./build/ so Xcode (which scans the source dir for .o
-# inputs) doesn't pick them up and double-link the same symbols. Both the
-# pattern rules below and PGXS's link step see these paths consistently.
-OBJS        = build/lwgeom_hex9.o build/hex9_c.o build/h9_warp_runtime.o build/h9_warp_embedded.o
+# Only the PostGIS glue is compiled here now; the H9 core is linked from the
+# installed libhex9 (see below). Object lives under ./build/ so Xcode (which
+# scans the source dir for .o inputs) doesn't pick it up and double-link.
+OBJS        = build/lwgeom_hex9.o
 DATA        = postgis_hex9--1.4.0.sql \
               postgis_hex9--1.0.0--1.1.0.sql \
               postgis_hex9--1.1.0--1.2.0.sql \
@@ -31,12 +39,13 @@ DATA        = postgis_hex9--1.4.0.sql \
 REGRESS      = hex9
 REGRESS_OPTS = --load-extension=postgis --load-extension=postgis_hex9
 
-# ── H9 core (shared with libhex9 / the Python module) ─────────────────────────
-# The glue (lwgeom_hex9.cpp) sees ONLY the C ABI in hex9_c.h; the core C++
-# headers are compiled solely into hex9_c.o.
-H9_ROOT     := ../..
-H9_CORE     := $(H9_ROOT)/core
-H9_WARP_BIN := $(abspath $(H9_CORE)/WGS84_l5_warp_f6.full.f64g.h9warp)
+# ── libhex9 (CMake-installed) ─────────────────────────────────────────────────
+# The glue includes only hex9_c.h (the C ABI) and links the shared library.
+# HEX9_PREFIX is the CMAKE_INSTALL_PREFIX used for `cmake --install` (default
+# /usr/local). Override it if you installed libhex9 elsewhere.
+HEX9_PREFIX ?= /usr/local
+H9_INCDIR   ?= $(HEX9_PREFIX)/include
+H9_LIBDIR   ?= $(HEX9_PREFIX)/lib
 
 # ── PostGIS source headers ────────────────────────────────────────────────────
 # liblwgeom headers are not installed by packagers; point POSTGIS_SRC at an
@@ -46,9 +55,12 @@ PG_CPPFLAGS  = \
     -I$(POSTGIS_SRC)/liblwgeom \
     -I$(POSTGIS_SRC)/libpgcommon \
     -I$(POSTGIS_SRC) \
-    -I$(H9_CORE) \
-    -I$(H9_ROOT) \
+    -I$(H9_INCDIR) \
     -I.
+
+# ── Link the installed libhex9 ────────────────────────────────────────────────
+# -lhex9 from the install libdir; rpath so the module finds it at load time.
+SHLIB_LINK  = -L$(H9_LIBDIR) -lhex9 -Wl,-rpath,$(H9_LIBDIR)
 
 # ── macOS: postgis-3.dylib is a Mach-O bundle; cannot link against it. ────────
 # liblwgeom symbols are resolved at runtime in _PG_init via h9_lwgeom_resolve()
@@ -57,36 +69,13 @@ PG_CPPFLAGS  = \
 # carries no undefined liblwgeom symbols, but -undefined dynamic_lookup is kept
 # for the remaining PG-core symbols resolved via -bundle_loader postgres.
 ifeq ($(shell uname -s),Darwin)
-SHLIB_LINK = -undefined dynamic_lookup
+SHLIB_LINK += -undefined dynamic_lookup
+# A plain CMake build emits a host-arch libhex9.dylib, but Postgres.app's
+# pg_config emits universal (x86_64 + arm64) arch flags. Collapse the module to
+# the host arch so it links against — and matches — the single-arch libhex9.
+# (arch flags live in CFLAGS/LDFLAGS from PGXS — normalized post-include below.)
+H9_HOST_ARCH := $(shell uname -m)
 endif
-
-# ── OpenMP (optional; parallelizes the batch encode/decode loops) ─────────────
-# hex9_c.cpp drives hex9_encode_many (and the decode/bin batch loops) with
-# #pragma omp parallel for. PGXS does not enable OpenMP, so without this the
-# extension's batch paths run serial — correct results, just no thread speedup.
-# Mirrors libhex9's CMake find_package(OpenMP); serial fallback when libomp is
-# absent (no behaviour change). Force serial with H9_OPENMP=0.
-H9_OPENMP ?= 1
-ifeq ($(H9_OPENMP),1)
-  ifeq ($(shell uname -s),Darwin)
-    # Apple clang needs Homebrew's keg-only libomp (the hint CMake documents).
-    LIBOMP := $(shell brew --prefix libomp 2>/dev/null)
-    ifneq ($(wildcard $(LIBOMP)/include/omp.h),)
-      OPENMP_CFLAGS := -Xpreprocessor -fopenmp -I$(LIBOMP)/include
-      OPENMP_LIBS   := -L$(LIBOMP)/lib -lomp
-      # Homebrew libomp is single-arch, but Postgres.app's pg_config emits a
-      # universal (x86_64 + arm64) build. macOS is dropping Intel, so collapse
-      # to the host arch rather than ship a slice with unresolved OpenMP symbols.
-      # (arch flags live in CFLAGS/LDFLAGS from PGXS — normalized post-include.)
-      H9_HOST_ARCH := $(shell uname -m)
-    endif
-  else
-    # gcc and Linux clang accept -fopenmp directly for compile and link.
-    OPENMP_CFLAGS := -fopenmp
-    OPENMP_LIBS   := -fopenmp
-  endif
-endif
-SHLIB_LINK += $(OPENMP_LIBS)
 
 include $(PGXS)
 
@@ -98,10 +87,10 @@ ifeq ($(shell uname -s),Darwin)
     override CPPFLAGS := $(shell echo "$(CPPFLAGS)" | sed "s|-isysroot [^ ]*|-isysroot $(_REAL_SDK)|g")
     override LDFLAGS  := $(shell echo "$(LDFLAGS)"  | sed "s|-isysroot [^ ]*|-isysroot $(_REAL_SDK)|g")
   endif
-  # OpenMP-on-macOS (see above): collapse the universal arch flags to host-only
-  # so the single-arch libomp links. Strips every "-arch X" pair, re-adds host.
+  # Collapse the universal arch flags to host-only so the host-arch libhex9
+  # links. Strips every "-arch X" pair, re-adds host.
   ifneq ($(H9_HOST_ARCH),)
-    $(info postgis_hex9: OpenMP on macOS — building $(H9_HOST_ARCH)-only (libomp is single-arch))
+    $(info postgis_hex9: macOS — building $(H9_HOST_ARCH)-only to match the installed libhex9)
     override CFLAGS  := $(shell echo "$(CFLAGS)"  | sed -E 's/-arch [^ ]+//g') -arch $(H9_HOST_ARCH)
     override LDFLAGS := $(shell echo "$(LDFLAGS)" | sed -E 's/-arch [^ ]+//g') -arch $(H9_HOST_ARCH)
   endif
@@ -114,25 +103,13 @@ endif
 # loaded dylib (`-dirty` suffix when working tree has uncommitted edits).
 H9_GIT_REV := $(shell git -C "$(CURDIR)" describe --always --dirty 2>/dev/null || echo unknown)
 H9_CXXFLAGS = $(CFLAGS) -std=c++17 -fno-exceptions $(CPPFLAGS) $(PG_CPPFLAGS) \
-              $(OPENMP_CFLAGS) -DH9_GIT_REV='"$(H9_GIT_REV)"' -MMD -MP
+              -DH9_GIT_REV='"$(H9_GIT_REV)"' -MMD -MP
 build/%.o: %.cpp | build
 	$(CXX) $(H9_CXXFLAGS) -c -o $@ $<
 
-# Core sources compiled straight from the libhex9 tree. h9_warp_embedded.cpp
-# .incbin's the 2 MB warp blob at compile time (self-contained dylib, no
-# runtime file load). The define carries its own quotes for the .incbin
-# string literal, matching how libhex9's CMake passes it.
-build/%.o: $(H9_CORE)/%.cpp | build
-	$(CXX) $(H9_CXXFLAGS) -DH9_WARP_BLOB='"$(H9_WARP_BIN)"' -c -o $@ $<
-
-# The C ABI implementation (repo root) — the only object that compiles the
-# core C++ headers; the glue links against it through hex9_c.h.
-build/hex9_c.o: $(H9_ROOT)/hex9_c.cpp | build
-	$(CXX) $(H9_CXXFLAGS) -c -o $@ $<
-
 # Header dependency tracking: -MMD -MP emits build/*.d listing each object's
-# header prerequisites, so editing a header (e.g. h9_ct.h, h9_grid.h) triggers
-# a rebuild. Without this, header-only changes silently produced a stale .dylib.
+# header prerequisites, so editing a header (e.g. h9_lwgeom_shim.h) triggers a
+# rebuild. Without this, header-only changes silently produced a stale .dylib.
 -include $(OBJS:.o=.d)
 
 build:

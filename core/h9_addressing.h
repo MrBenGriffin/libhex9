@@ -16,11 +16,11 @@
  *
  * UUID layout (32 nibbles, big-endian) — parameterised by h9_layout.h
  * ─────────────────────────────────────
- *   Legacy (HEX9_USE_L29, default):
+ *   Legacy (HEX9_USE_L29, opt-in):
  *     nibbles  0..29 : body  L0..L29 (hierarchical hex digits; valid range 0..11
  *                      at L0, 0..8 at L1+; 0xF is never a valid body nibble)
  *     nibble      30 : h_term — terminal RID (0..11); 0xF = OOB sentinel in bins
- *   Reclaimed (HEX9_USE_L29 off): h_term is cell-identity-redundant, so nibble
+ *   Reclaimed (HEX9_USE_L29 off, the default): h_term is cell-identity-redundant, so nibble
  *     30 is reclaimed as body[30], extending addressing to L30. A full UUID then
  *     IS a max-depth bin — there is no separate h_term / "address vs bin".
  *   Both layouts:
@@ -859,7 +859,9 @@ static void h9_bin_uuid(const uint8_t in[16], int layer, uint8_t out[16]) {
      * NOT guaranteed. Bins are layer-scoped keys, not addresses; the c_mo
      * recovery below breaks at split-hex (6/7/8) ancestry — e.g. a bin near
      * the (-90,0) vertex re-bins to an all-sentinel body. Re-bin from the
-     * FULL uuid. Kept because it works away from meta-bearing cells. */
+     * FULL uuid. Kept because it works away from meta-bearing cells.
+     * The supported CELL-level roll-up of a bin is h9kring::h9_cell_parent_uuid
+     * / h9_cell_ancestor_uuid (h9_kring.h) — canonical mode-0 parent. */
     uint8_t c_mo = (nibbles[31] >> 3) & 1u;
     uint8_t c2   = (nibbles[31] >> 1) & 3u;
     int top = H9_NIB_BODYTOP;

@@ -25,10 +25,25 @@ CREATE OR REPLACE FUNCTION h9_version()
     LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
     COST 1;
 
+-- h9_lmax() → integer
+--   Deepest addressable layer of the loaded libhex9: 30 for the default
+--   (reclaimed) layout, 29 on a legacy HEX9_USE_L29 build. The value is
+--   compiled into the linked library, so this reports the layout the extension
+--   is actually running — use it to confirm an L30 install:
+--       SELECT h9_lmax();   -- 30
+--
+-- Availability: Hex9 1.4.0
+CREATE OR REPLACE FUNCTION h9_lmax()
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'h9_lmax'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 1;
+
 -- ── Encode ───────────────────────────────────────────────────────────────────
 
 -- h9_encode(geometry) → uuid
---   Encodes a POINT to a self-contained UUID at layer 29 resolution.
+--   Encodes a POINT to a self-contained UUID at the deepest layer (30; 29 on
+--   the legacy USE_L29 layout). See h9_lmax().
 --   The UUID carries all decode context internally; no companion byte needed.
 --   Suitable for exact round-trip via h9_decode(), indexing, and h9_bin().
 --
@@ -67,7 +82,8 @@ CREATE OR REPLACE FUNCTION h9_encode_many(geometry[])
 -- h9_decode(uuid) → geometry
 --   Decode a UUID to a POINT geometry (SRID 4326).
 --   Exact round-trip: h9_decode(h9_encode(pt)) recovers the input point
---   to within the resolution of layer 29 (~95 nm cell diameter).
+--   to within the resolution of the deepest layer (layer 30 ≈ 32 nm; layer 29
+--   ≈ 95 nm on the legacy layout).
 --
 --   GUARANTEED for full UUIDs only. Bins are layer-scoped grouping keys,
 --   not addresses; decoding one is a fossil convenience that mis-locates
@@ -85,7 +101,8 @@ CREATE OR REPLACE FUNCTION h9_decode(uuid)
 -- ── Hierarchy ────────────────────────────────────────────────────────────────
 
 -- h9_bin(uuid, integer) → uuid
---   Returns the bin-key UUID at the given layer (0..29).
+--   Returns the bin-key UUID at the given layer (0..lmax; lmax = 30, or 29 on
+--   the legacy USE_L29 layout).
 --   All points in the same H9 cell at layer L produce the same output UUID,
 --   making this safe for GROUP BY aggregation and spatial binning.
 --   Body nibbles above layer are replaced with the 0xF sentinel; nibble[31]

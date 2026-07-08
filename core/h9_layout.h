@@ -2,9 +2,9 @@
 /*
  * h9_layout.h — addressing-layout dimensions, gated by HEX9_USE_L29.
  *
- * The 16-byte UUID is 32 nibbles. The legacy layout (HEX9_USE_L29, the default,
- * set by the CMake option of the same name) spends nibble 30 on h_term — the
- * L30 look-ahead RID — and addresses cells to L29. Undefining HEX9_USE_L29
+ * The 16-byte UUID is 32 nibbles. The legacy layout (HEX9_USE_L29, opt-in via
+ * the CMake option of the same name) spends nibble 30 on h_term — the L30
+ * look-ahead RID — and addresses cells to L29. The default (HEX9_USE_L29 off)
  * reclaims nibble 30 as body[30] — proven cell-identity-redundant by
  * test/canonical_invariants.py (bins omit h_term yet stay globally unique and
  * traversable) — extending addressing to L30 for the same 16 bytes. key_tail

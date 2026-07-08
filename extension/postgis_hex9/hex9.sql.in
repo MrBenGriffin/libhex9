@@ -25,11 +25,25 @@ CREATE OR REPLACE FUNCTION h9_version()
     LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
     COST 1;
 
+-- h9_lmax() → integer
+--   Deepest addressable layer of the loaded libhex9: 30 for the default
+--   (reclaimed) layout, 29 on a legacy HEX9_USE_L29 build. The value is
+--   compiled into the linked library, so this reports the layout the extension
+--   is actually running — use it to confirm an L30 install:
+--       SELECT h9_lmax();   -- 30
+--
+-- Availability: Hex9 1.4.0
+CREATE OR REPLACE FUNCTION h9_lmax()
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'h9_lmax'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 1;
+
 -- ── Encode ───────────────────────────────────────────────────────────────────
 
 -- h9_encode(geometry) → uuid
 --   Encodes a POINT to a self-contained UUID at the deepest layer (30; 29 on
---   the legacy USE_L29 layout). See hex9_lmax().
+--   the legacy USE_L29 layout). See h9_lmax().
 --   The UUID carries all decode context internally; no companion byte needed.
 --   Suitable for exact round-trip via h9_decode(), indexing, and h9_bin().
 --

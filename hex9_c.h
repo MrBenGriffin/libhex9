@@ -98,6 +98,22 @@ int  hex9_decode_many(const uint8_t *uuid, size_t n,
 int  hex9_bin_many(const uint8_t *uuid, int layer, size_t n,
                    uint8_t *out_uuid);
 
+/* ── Canonical cell parent / ancestor (mode-0 convention) ──────────────────
+ *
+ * The CELL-level roll-up: which single layer-(L-1) cell is the canonical
+ * parent of a layer-L cell (the parent x_cell containing the cell's mode-0
+ * d_cell). Distinct from hex9_bin, which answers the POINT question and is
+ * only guaranteed from a FULL uuid. Input is a layer-L bin UUID (L >= 1 for
+ * parent); ancestor = iterated one-level parent down to `layer`, pass-through
+ * when already there. Every parent has exactly 9 canonical children.
+ * Return 0 on success; 1 on an L0 parent request, an input coarser than the
+ * target layer, or a malformed uuid (batch forms fail whole-batch). */
+int  hex9_cell_parent(const uint8_t uuid[16], uint8_t out_uuid[16]);
+int  hex9_cell_parent_many(const uint8_t *uuid, size_t n, uint8_t *out_uuid);
+int  hex9_cell_ancestor(const uint8_t uuid[16], int layer, uint8_t out_uuid[16]);
+int  hex9_cell_ancestor_many(const uint8_t *uuid, int layer, size_t n,
+                             uint8_t *out_uuid);
+
 /* ── Continuous projection (b_oct backend) ─────────────────────────────────
  *
  * Forward map ONLY — no descent, no layer, no L29 cap. Writes the continuous

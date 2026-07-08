@@ -202,6 +202,20 @@ Datum h9_version(PG_FUNCTION_ARGS) {
 }
 } /* extern "C" */
 
+/* ── h9_lmax() → integer ─────────────────────────────────────────────────── */
+
+extern "C" {
+PG_FUNCTION_INFO_V1(h9_lmax);
+/* Deepest addressable layer of the loaded libhex9: 30 for the default
+ * (reclaimed) layout, 29 on a legacy HEX9_USE_L29 build. Authoritative — the
+ * value is compiled into the linked library (hex9_lmax() from the C ABI), so it
+ * reports the layout the extension is actually running, not what the SQL was
+ * generated against. */
+Datum h9_lmax(PG_FUNCTION_ARGS) {
+	PG_RETURN_INT32(hex9_lmax());
+}
+} /* extern "C" */
+
 /* ── Internal helpers ────────────────────────────────────────────────────── */
 
 /*

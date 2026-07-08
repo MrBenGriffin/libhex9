@@ -76,6 +76,38 @@ bin(u8_2d_in uuid, int layer) {
     return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
 }
 
+/* cell_parent(uuid[n,16]) -> uint8[n,16] — canonical one-level cell parent */
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
+cell_parent(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    uint8_t *out = new uint8_t[n * 16];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = hex9_cell_parent_many(uuid.data(), n, out);
+    }
+    if (rc) { delete[] out; throw std::runtime_error("hex9.cell_parent: L0 cells have no parent (or malformed uuid)"); }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
+/* cell_ancestor(uuid[n,16], layer) -> uint8[n,16] — iterated cell parent */
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
+cell_ancestor(u8_2d_in uuid, int layer) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    uint8_t *out = new uint8_t[n * 16];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = hex9_cell_ancestor_many(uuid.data(), layer, n, out);
+    }
+    if (rc) { delete[] out; throw std::runtime_error("hex9.cell_ancestor: input coarser than target layer (or layer/uuid invalid)"); }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
 using u8_1d = nb::ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 
 /* helper: wrap a heap double[] as a numpy ndarray that owns + frees it */
@@ -295,6 +327,15 @@ NB_MODULE(hex9_ext, m) {
           "Decode an (n,16) uint8 UUID array to (lon, lat) arrays.");
     m.def("bin", &bin, nb::arg("uuid"), nb::arg("layer"),
           "Bin an (n,16) UUID array to cell keys at the given layer.");
+    m.def("cell_parent", &cell_parent, nb::arg("uuid"),
+          "Canonical one-level CELL parent of each (n,16) layer-L bin (L>=1): "
+          "the layer-(L-1) cell containing the cell's mode-0 d_cell. Every "
+          "parent has exactly 9 canonical children. Distinct from bin(), which "
+          "answers the point question from a FULL uuid.");
+    m.def("cell_ancestor", &cell_ancestor, nb::arg("uuid"), nb::arg("layer"),
+          "Canonical layer-`layer` CELL ancestor of each (n,16) bin — the "
+          "iterated one-level cell_parent (composition, not a deep re-bin). "
+          "Cells already at `layer` pass through unchanged.");
     m.def("cell", &cell, nb::arg("uuid"), nb::arg("layer"), nb::arg("densify") = 0,
           "Hexagon ring (npoints,2) lon/lat for a UUID at layer/densify.");
     m.def("grid", &grid,

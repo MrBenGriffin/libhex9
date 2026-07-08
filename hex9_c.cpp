@@ -200,6 +200,41 @@ extern "C" int hex9_bin_many(const uint8_t *uuid, int layer, size_t n,
     return 0;
 }
 
+/* ── Canonical cell parent / ancestor (mode-0 convention) ─────────────────
+ * Thin surface over h9kring::h9_cell_parent_uuid / h9_cell_ancestor_uuid —
+ * see the doctrine comment there. */
+extern "C" int hex9_cell_parent(const uint8_t uuid[16], uint8_t out_uuid[16]) {
+    return h9kring::h9_cell_parent_uuid(uuid, out_uuid) ? 0 : 1;
+}
+
+extern "C" int hex9_cell_parent_many(const uint8_t *uuid, size_t n,
+                                     uint8_t *out_uuid) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= h9kring::h9_cell_parent_uuid(uuid + (size_t)i * 16,
+                                          out_uuid + (size_t)i * 16) ? 0 : 1;
+    return rc;
+}
+
+extern "C" int hex9_cell_ancestor(const uint8_t uuid[16], int layer,
+                                  uint8_t out_uuid[16]) {
+    return h9kring::h9_cell_ancestor_uuid(uuid, layer, out_uuid) ? 0 : 1;
+}
+
+extern "C" int hex9_cell_ancestor_many(const uint8_t *uuid, int layer, size_t n,
+                                       uint8_t *out_uuid) {
+    if (layer < 0 || layer > H9_LMAX) return 1;
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= h9kring::h9_cell_ancestor_uuid(uuid + (size_t)i * 16, layer,
+                                            out_uuid + (size_t)i * 16) ? 0 : 1;
+    return rc;
+}
+
 /* ── Continuous projection (b_oct backend) ──────────────────────────────────
  * Thin surface over the grid-canonical forward kernel (the same one encode_one
  * uses in mode 1). No descent, no L29 cap — see hex9_c.h / boct_backend_design. */
