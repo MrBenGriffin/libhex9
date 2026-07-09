@@ -47,6 +47,7 @@
 #include "h9_addressing.h"
 #include "h9_uv_lattice.h"
 #include "h9_grid.h"
+#include "h9_fold_tables.h"
 
 namespace h9kring {
 
@@ -399,30 +400,43 @@ static inline void identity_to_uuid(const H9CellId &id, int layer, uint8_t out[1
     h9grid::uuid_from_iauv(id.oid, id.c2, id.ia, id.ib, layer, id.ext, out);
 }
 
-/* ── Canonical cell parent / ancestor (mode-0 convention) ───────────────────
+/* ── Canonical cell ancestry engine (mode-0 convention) ─────────────────────
  *
- * The canonical parent of a layer-L cell is the layer-(L-1) x_cell that
- * contains the cell's MODE-0 d_cell (the §10b mode-0 convention). This is the
- * CELL question, distinct from the POINT question h9_bin_uuid answers: a
- * split cell (terminal digit 6/7/8) geometrically straddles two parents and
- * its centroid lies exactly ON the straddled boundary, so re-binning the
- * decoded centroid tie-breaks unreliably (the F3 fossil). Cure — the same one
- * h9grid::full_id_from_cell applies to identity UUIDs — decode to a point
- * strictly interior to the mode-0 d_cell: the centroid nudged a fixed
- * fraction toward the cell origin (the origin lies on the mode-0 side), bin
- * that point one layer up with the grid-canonical containment descent, and
- * canonicalise the resulting presentation through the frame cascade
- * (the nudged point may sit in the parent hexagon's mode-1 half — Python's
- * canonicalise fold, resolve_frames/identity_to_uuid here).
+ * DOCTRINE — the subdivision tree is on d_cells, not x_cells. An x_cell's
+ * territory at the next layer is 18 d_cells (12 complete = its 6 interior
+ * children, plus its own 6 split halves); the d_cell tree is rep-9 and nests
+ * EXACTLY, and the mode-0 reification of d_cells into x_cells happens once,
+ * at the leaf. A cell's mode-0 d_cell therefore lies wholly inside one
+ * x_cell at EVERY coarser layer, so its canonical ancestor at ANY depth is
+ * the single deep re-bin of a mode-0-interior point. (Composing one-level
+ * parents instead would re-adjudicate the splits at every layer and the
+ * hexagon decoheres — deep tongues/voids, 1/6 of the area displaced; see
+ * hex9 docs/dggs/dggs_nesting.py. The two coincide for one generation only.)
  *
- * Mirrors Python hhg9 h9_cell_parent/_mode0_interior_pts byte-for-byte
- * (hhg9/h9/uuid_address.py); every parent has exactly 9 canonical children
- * (its 6 interior children + its own 3 split children), verified globally
- * for L1..L5 (experimental/cell_ancestor_verify.py).
+ * This is the CELL question, distinct from the POINT question h9_bin_uuid
+ * answers: a split cell (terminal digit 6/7/8) geometrically straddles two
+ * owners and its centroid lies exactly ON the straddled boundary, so
+ * re-binning the decoded centroid tie-breaks unreliably (the F3 fossil).
+ * Cure — the same one h9grid::full_id_from_cell applies to identity UUIDs —
+ * decode to a point strictly interior to the mode-0 d_cell: the centroid
+ * nudged a fixed fraction toward the cell origin (the origin lies on the
+ * mode-0 side), bin that point at the TARGET layer with the grid-canonical
+ * containment descent, and canonicalise the resulting presentation through
+ * the frame cascade (the nudged point may sit in the target hexagon's mode-1
+ * half — Python's canonicalise fold, resolve_frames/identity_to_uuid here).
  *
- * Input is a canonical layer-L bin UUID, L >= 1. Returns false for an L0
- * input (no parent) or a malformed root nibble. */
-static inline bool h9_cell_parent_uuid(const uint8_t in[16], uint8_t out[16]) {
+ * Mirrors Python hhg9 _mode0_interior_pts + h9_bin_pts byte-for-byte;
+ * every parent has exactly 9 canonical children and every cell exactly
+ * 9^g canonical layer-(L+g) descendants.
+ *
+ * NOTE: kept as the GEOMETRIC ORACLE. Production parent/ancestor run the
+ * address-space fold (h9_cell_fold_uuid below) — exact at any depth,
+ * where this double-precision descent's nudge margins give out near L25.
+ *
+ * Input is a canonical layer-L bin UUID; requires 0 <= target_layer < L.
+ * Returns false otherwise, or for a malformed root nibble. */
+static inline bool h9_cell_bin_at_uuid(const uint8_t in[16], int target_layer,
+                                       uint8_t out[16]) {
     uint8_t nib[32];
     h9a_unpack(in, nib);
     if (nib[0] > 11) return false;
@@ -435,7 +449,7 @@ static inline bool h9_cell_parent_uuid(const uint8_t in[16], uint8_t out[16]) {
         if (nib[l] == 0x0Fu) break;
         top_l = l;
     }
-    if (top_l < 1) return false;              /* L0 cells have no parent */
+    if (target_layer < 0 || top_l <= target_layer) return false;
 
     /* Backward pass seeded with c_mo = 0: canonicalise-always is the encoder
      * contract, so every bin's key tail is a mode-0 terminal presentation —
@@ -476,7 +490,7 @@ static inline bool h9_cell_parent_uuid(const uint8_t in[16], uint8_t out[16]) {
     double cx = cen_x + NUDGE * (org_x - cen_x);
     double cy = cen_y + NUDGE * (org_y - cen_y);
     const int oid   = (int)H9_L0HEX_BACK[nib[0]][r_mo][0];
-    const int layer = top_l - 1;               /* parent layer */
+    const int layer = target_layer;
     h9grid::h9_preamble_nudge(&cx, &cy, (int)H9_OID_MO[oid]);
 
     /* layer+1 containment descents (uuid_from_cxcy's loop: classify_band →
@@ -566,11 +580,143 @@ static inline bool h9_cell_parent_uuid(const uint8_t in[16], uint8_t out[16]) {
     return true;
 }
 
-/* Canonical layer-`target_layer` ancestor of a cell = ITERATED one-level
- * parent. Canonical ancestry is a per-level relation, so the multi-level
- * ancestor is the composition of h9_cell_parent_uuid — never a single deep
- * re-bin of an interior point, which answers the POINT question instead and
- * differs at nested splits (exactly 1/9 of cells). Mirrors Python
+/* Address-space canonical CELL bin of `in` at `target_layer` — the fold.
+ *
+ * The pure-address form of the same mode-0 d_cell doctrine as
+ * h9_cell_bin_at_uuid (which is kept as the geometric oracle): the
+ * backward pass recovers the region thread (rids[l] is the region the
+ * thread occupies one scale up of digit l); truncate it at the target
+ * layer; where the presentation there is mode-1 (the thread came up the
+ * far side of a split), fold to the canonical mode-0 registration —
+ * region_neighbours' upward cascade within the octant, the y-mirror
+ * involution when the fold crosses an octant seam — then re-emit digits
+ * and the canonical tail through the forward walk. Exact integer/table
+ * arithmetic at any depth: no doubles, no nudge (the geometric oracle's
+ * nudge margins scale 3^-L and give out near L25). Port of hhg9
+ * addressing.x_adr_cell_ancestor; byte-identical to it and to the
+ * geometric oracle for all cells L1..L4 at every target.
+ *
+ * Note the backward pass seeds (c_mo=0, c2) directly: for canonical tails
+ * the '3'-terminal lift hex_reg[3][0][c2] is the identity on the context.
+ * Requires 0 <= target_layer < the input's own layer. */
+static inline bool h9_cell_fold_uuid(const uint8_t in[16], int target_layer,
+                                     uint8_t out[16]) {
+    uint8_t nib[32];
+    h9a_unpack(in, nib);
+    if (nib[0] > 11) return false;
+    const uint8_t r_mo = nib[H9_NIB_TAIL] & 1u;
+    const uint8_t p_c2 = (nib[H9_NIB_TAIL] >> 1) & 3u;
+    int top_l = 0;
+    for (int l = 1; l <= H9_NIB_BODYTOP; ++l) {
+        if (nib[l] == 0x0Fu) break;
+        top_l = l;
+    }
+    if (target_layer < 0 || top_l <= target_layer) return false;
+    const int T = target_layer;
+
+    /* Backward pass: recover the region thread. */
+    uint8_t rids[H9_NLEVELS + 1];
+    {
+        uint8_t c_mo = 0, c2 = p_c2;
+        rids[0] = r_mo;
+        for (int l = top_l; l >= 1; --l) {
+            const uint8_t *e = H9_HEX_REG[nib[l]][c_mo][c2];
+            rids[l] = e[0]; c_mo = e[1]; c2 = e[2];
+        }
+    }
+
+    /* Truncated chain in classifier-cell space: [proto, e_0 .. e_T]. */
+    uint8_t cx[H9_NLEVELS + 2];
+    const int xl = T + 2;
+    for (int i = 0; i < xl; ++i) cx[i] = H9_RID2CELL[rids[i]];
+    int oid = (int)H9_L0HEX_BACK[nib[0]][r_mo][0];
+
+    /* Fold a mode-1 presentation to the canonical side (region_neighbours'
+     * cascade; cf. hhg9 canonicalise / region.region_neighbours). */
+    if (T > 0 && H9F_CMODE[cx[xl - 2]] == 1) {
+        const uint8_t cur  = cx[xl - 2];
+        const uint8_t imo  = H9F_CMODE[cur];
+        const uint8_t term = cx[xl - 1];
+        const uint8_t c2n  = H9F_TERM_C2[imo][term];
+        const uint8_t pmo  = H9F_CMODE[cx[xl - 3]];
+        const uint8_t *nbm = H9F_CMC2N[cur][pmo][c2n];
+        uint8_t nb[H9_NLEVELS + 2];
+        std::memcpy(nb, cx, (size_t)xl);
+        nb[xl - 2] = nbm[0];
+        nb[xl - 1] = H9F_CHILD_TRM[H9F_CMODE[nbm[0]]][c2n];
+        bool cascading = (nbm[1] != pmo);
+        for (int poi = xl - 3; poi >= 1 && cascading; --poi) {
+            const uint8_t pmo_a = H9F_CMODE[nb[poi - 1]];
+            const uint8_t *e2 = H9F_CMC2N[nb[poi]][pmo_a][c2n];
+            nb[poi] = e2[0];
+            cascading = (e2[1] != pmo_a);
+        }
+        if (cascading)
+            nb[0] = H9F_PROTO[1u - H9F_CMODE[nb[0]]];
+        nb[0] = H9F_PROTO[H9F_CMODE[nb[0]]];          /* normalise proto */
+        if (nb[0] != cx[0]) {
+            /* Octant-spanning fold: hop the octant, mirror the chain
+             * entry-wise (each level's frame transform commutes with the
+             * seam's y-flip). */
+            oid = (int)H9_OID_NB[oid][c2n];
+            for (int i = 0; i < xl; ++i) cx[i] = H9F_YMIRROR[cx[i]];
+        } else {
+            std::memcpy(cx, nb, (size_t)xl);
+        }
+    }
+
+    /* Forward walk: chain -> digits + canonical tail (hhg9 _r_adr_forward). */
+    const uint8_t r_mo2 = H9_OID_MO[oid];
+    uint8_t c2f = H9_MCC2[r_mo2][cx[1]];
+    if (c2f == H9F_INVALID) c2f = 0;
+    uint8_t onib[32];
+    for (int i = 0; i < 32; ++i) onib[i] = 0x0Fu;
+    onib[0] = H9_L0HEX_BY_ID[oid][c2f];
+    uint8_t p = H9_CELL2RID[cx[0]], c = H9_CELL2RID[cx[1]];
+    uint8_t p_mo = p & 1u;                            /* modes[rid] = parity */
+    uint8_t c2w = c2f;
+    for (int ri = 2; ri < xl; ++ri) {
+        const uint8_t h = H9_CELL2RID[cx[ri]];
+        const uint8_t *e = H9_REG_HEX[p_mo][c][h];    /* {hex digit, c2} */
+        onib[ri - 1] = e[0];
+        c2w = e[1];
+        p = c; c = h;
+        p_mo = p & 1u;
+    }
+    if (T == 0) {
+        /* L0 bins canonicalise to the mode-0 octant rep. */
+        onib[H9_NIB_TAIL] = (uint8_t)((H9_L0HEX_BACK[onib[0]][0][1] & 3u) << 1);
+    } else {
+        static const uint8_t T_H[2][3] = {{6, 10, 8}, {7, 11, 9}};
+        const uint8_t *te = H9_REG_HEX[p_mo][p][T_H[p_mo][c2w]];
+        onib[H9_NIB_TAIL] = (uint8_t)((p_mo << 3) | ((te[1] & 3u) << 1) | r_mo2);
+    }
+    h9a_pack(onib, out);
+    return true;
+}
+
+/* Canonical parent bin of a cell — one layer up (mode-0 convention).
+ * Every layer-(L-1) cell is the canonical parent of exactly 9 layer-L cells:
+ * its 6 interior children plus its own 3 split children (verified globally
+ * for L1..L5, byte-identical to hhg9). Returns false for an L0 input (no
+ * parent) or a malformed root nibble. */
+static inline bool h9_cell_parent_uuid(const uint8_t in[16], uint8_t out[16]) {
+    uint8_t nib[32];
+    h9a_unpack(in, nib);
+    int top_l = 0;
+    for (int l = 1; l <= H9_NIB_BODYTOP; ++l) {
+        if (nib[l] == 0x0Fu) break;
+        top_l = l;
+    }
+    return h9_cell_fold_uuid(in, top_l - 1, out);   /* L0: -1 -> false */
+}
+
+/* Canonical layer-`target_layer` ancestor of a cell — the DIRECT deep re-bin
+ * of the cell's mode-0-interior point (see the d_cell doctrine on
+ * h9_cell_bin_at_uuid). NOT the iterated one-level parent: composing
+ * h9_cell_parent_uuid level-by-level re-adjudicates splits at every layer
+ * and decoheres at nested splits (the relations differ on exactly 1/9 of
+ * cells; they coincide for a single generation). Mirrors Python
  * h9_cell_ancestor. A cell already at target_layer passes through unchanged;
  * returns false when the input is coarser than target_layer. */
 static inline bool h9_cell_ancestor_uuid(const uint8_t in[16], int target_layer,
@@ -584,13 +730,8 @@ static inline bool h9_cell_ancestor_uuid(const uint8_t in[16], int target_layer,
         top_l = l;
     }
     if (top_l < target_layer) return false;   /* input coarser than target */
-    std::memcpy(out, in, 16);
-    uint8_t cur[16];
-    for (int l = top_l; l > target_layer; --l) {
-        std::memcpy(cur, out, 16);
-        if (!h9_cell_parent_uuid(cur, out)) return false;
-    }
-    return true;
+    if (top_l == target_layer) { std::memcpy(out, in, 16); return true; }
+    return h9_cell_fold_uuid(in, target_layer, out);
 }
 
 /* ── k-disk / k-ring (BFS on the symbolic neighbour step) ─────────────────── */

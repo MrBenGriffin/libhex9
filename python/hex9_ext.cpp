@@ -334,8 +334,9 @@ NB_MODULE(hex9_ext, m) {
           "answers the point question from a FULL uuid.");
     m.def("cell_ancestor", &cell_ancestor, nb::arg("uuid"), nb::arg("layer"),
           "Canonical layer-`layer` CELL ancestor of each (n,16) bin — the "
-          "iterated one-level cell_parent (composition, not a deep re-bin). "
-          "Cells already at `layer` pass through unchanged.");
+          "direct deep re-bin of the cell's mode-0 d_cell interior (leaf-only "
+          "reification; NOT iterated cell_parent, which decoheres at nested "
+          "splits). Cells already at `layer` pass through unchanged.");
     m.def("cell", &cell, nb::arg("uuid"), nb::arg("layer"), nb::arg("densify") = 0,
           "Hexagon ring (npoints,2) lon/lat for a UUID at layer/densify.");
     m.def("grid", &grid,

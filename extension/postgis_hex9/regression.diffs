@@ -1,0 +1,65 @@
+diff -U3 /Users/ben/Documents/Projects/libhex9/extension/postgis_hex9/expected/hex9.out /Users/ben/Documents/Projects/libhex9/extension/postgis_hex9/results/hex9.out
+--- /Users/ben/Documents/Projects/libhex9/extension/postgis_hex9/expected/hex9.out	2026-06-17 16:52:08
++++ /Users/ben/Documents/Projects/libhex9/extension/postgis_hex9/results/hex9.out	2026-07-08 19:19:12
+@@ -88,7 +88,7 @@
+     8) AS label_key_l8;
+  label_key_l8 
+ --------------
+- 435878503.b
++ 435878503.3
+ (1 row)
+ 
+ -- ── h9_bin idempotency ────────────────────────────────────────────────────────
+@@ -237,7 +237,7 @@
+ 
+ -- Bad layer must raise an error.
+ SELECT h9_neighbors(h9_encode(ST_SetSRID(ST_MakePoint(0, 0), 4326)), 0);
+-ERROR:  h9_neighbors: layer must be 1..29, got 0
++ERROR:  h9_neighbors: layer must be 1..30, got 0
+ -- Bin input must be rejected: bins are layer-scoped keys, not addresses.
+ SELECT h9_neighbors(h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(0, 0), 4326)), 8), 8);
+ ERROR:  h9_neighbors: bin UUIDs are layer keys, not addresses — pass the full UUID from h9_encode
+@@ -287,7 +287,7 @@
+ FROM cells;
+  self_ancestor | self_layer | gb_ancestor | gb_layer | gb_uuid 
+ ---------------+------------+-------------+----------+---------
+- t             | t          | t           | t        | t
++ t             | t          | f           | t        | f
+ (1 row)
+ 
+ -- ── h9_adaptive ───────────────────────────────────────────────────────────────
+@@ -343,7 +343,7 @@
+ -- Bad layer bounds must raise an error.
+ SELECT h9_adaptive(
+     ARRAY[h9_encode(ST_SetSRID(ST_MakePoint(0, 0), 4326))], NULL, 10, 6, 100.0);
+-ERROR:  h9_adaptive: need 0 <= min_layer <= max_layer <= 29
++ERROR:  h9_adaptive: need 0 <= min_layer <= max_layer <= 30
+ -- Bin input must be rejected (full uuids only — the digest re-bins across
+ -- layers, guaranteed only from the full uuid).
+ SELECT h9_adaptive(
+@@ -363,7 +363,7 @@
+   AS f1_bare_label_ambiguous;
+  f1_bare_label_ambiguous 
+ -------------------------
+- t
++ f
+ (1 row)
+ 
+ -- F2: identity decode mis-locates meta-bearing bins. Westminster's L1 bin
+@@ -376,7 +376,7 @@
+   AS f2_bin_decode_mislocated;
+  f2_bin_decode_mislocated 
+ --------------------------
+- t
++ f
+ (1 row)
+ 
+ -- F3: bin→coarser re-binning is unguaranteed at split-hex ancestry; near the
+@@ -388,6 +388,6 @@
+ FROM (SELECT h9_encode(ST_SetSRID(ST_MakePoint(-89.9863, 0.0091), 4326)) AS u) s;
+  f3_rebin_garbage | f3_rebin_diverges 
+ ------------------+-------------------
+- t                | t
++ f                | f
+ (1 row)
+ 
