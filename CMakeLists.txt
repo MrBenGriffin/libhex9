@@ -96,6 +96,17 @@ install(TARGETS hex9 hex9Static
 
 # ── tests ────────────────────────────────────────────────────────────────────
 enable_testing()
+
+# ── PDAL plugin (opt-in) ─────────────────────────────────────────────────────
+# filters.hex9 — projects WGS84 lon/lat to Hex9 w_oct. Off by default so the
+# PostGIS/CLI build is unaffected; enable with -DHEX9_PDAL=ON (needs PDAL).
+# After enable_testing() so the plugin's guarded ctest registers.
+option(HEX9_PDAL "Build the PDAL filters.hex9 plugin" OFF)
+if (HEX9_PDAL)
+  find_package(PDAL REQUIRED)
+  add_subdirectory(pdal)
+endif()
+
 add_executable(smoke test/smoke.c)
 target_link_libraries(smoke PRIVATE hex9)
 add_test(NAME smoke COMMAND smoke)
@@ -133,6 +144,12 @@ add_test(NAME bin_prefix_guard COMMAND bin_prefix_guard)
 add_executable(full_id test/full_id.c)
 target_link_libraries(full_id PRIVATE hex9)
 add_test(NAME full_id COMMAND full_id)
+
+# w_oct 3D storage CRS: seamless round-trip, unit-octahedron invariant,
+# oid==sign(xyz), and b_oct<->xyz rotation round-trip.
+add_executable(woct test/woct.c)
+target_link_libraries(woct PRIVATE hex9)
+add_test(NAME woct COMMAND woct)
 
 # Great-circle adjacency validation against the encoder oracle (Ben's
 # "demonstrably safe ground" harness). Default 400 pts/circle keeps ctest

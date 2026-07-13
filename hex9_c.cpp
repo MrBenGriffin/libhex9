@@ -268,6 +268,78 @@ extern "C" int hex9_unproject_many(const double *cx, const double *cy,
     return 0;
 }
 
+/* ── Warped octahedral cartesian CRS (w_oct; the 3D storage baseline) ────────
+ * Seamless 3D coordinate for the sphere — see hex9_c.h. xyz is on the unit
+ * octahedron; oid == sign(xyz). b_oct <-> xyz is pure rotation; lon/lat <-> xyz
+ * crosses the authalic warp (via hex9_project/unproject). */
+extern "C" int hex9_boct_to_woct(double cx, double cy, int oid, double xyz[3]) {
+    if (oid < 0 || oid > 7) return 1;
+    h9grid::boct_to_woct(cx, cy, oid, xyz);
+    return 0;
+}
+
+extern "C" int hex9_woct_to_boct(const double xyz[3], double *cx, double *cy,
+                                 int *oid) {
+    h9grid::woct_to_boct(xyz, cx, cy, oid);
+    return 0;
+}
+
+extern "C" int hex9_to_woct(double lon, double lat, double xyz[3]) {
+    double cx, cy; int oid;
+    h9grid::lonlatdeg_to_boct_oid(lon, lat, &cx, &cy, &oid);
+    h9grid::boct_to_woct(cx, cy, oid, xyz);
+    return 0;
+}
+
+extern "C" int hex9_from_woct(const double xyz[3], double *lon, double *lat) {
+    double cx, cy; int oid;
+    h9grid::woct_to_boct(xyz, &cx, &cy, &oid);
+    return h9grid::boct_oid_to_lonlat(cx, cy, oid, lon, lat) ? 0 : 1;
+}
+
+extern "C" int hex9_boct_to_woct_many(const double *cx, const double *cy,
+                                      const int *oid, size_t n, double *xyz) {
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        h9grid::boct_to_woct(cx[i], cy[i], oid[i], xyz + (size_t)i * 3);
+    return 0;
+}
+
+extern "C" int hex9_woct_to_boct_many(const double *xyz, size_t n,
+                                      double *cx, double *cy, int *oid) {
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        h9grid::woct_to_boct(xyz + (size_t)i * 3, &cx[i], &cy[i], &oid[i]);
+    return 0;
+}
+
+extern "C" int hex9_to_woct_many(const double *lon, const double *lat, size_t n,
+                                 double *xyz) {
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < N; ++i) {
+        double cx, cy; int oid;
+        h9grid::lonlatdeg_to_boct_oid(lon[i], lat[i], &cx, &cy, &oid);
+        h9grid::boct_to_woct(cx, cy, oid, xyz + (size_t)i * 3);
+    }
+    return 0;
+}
+
+extern "C" int hex9_from_woct_many(const double *xyz, size_t n,
+                                   double *lon, double *lat) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i) {
+        double cx, cy; int oid;
+        h9grid::woct_to_boct(xyz + (size_t)i * 3, &cx, &cy, &oid);
+        rc |= h9grid::boct_oid_to_lonlat(cx, cy, oid, &lon[i], &lat[i]) ? 0 : 1;
+    }
+    return rc;
+}
+
 extern "C" int hex9_ring_npoints(int densify) {
     if (densify < 0 || densify > 9) return -1;
     int n = 1;

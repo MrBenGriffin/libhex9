@@ -373,6 +373,45 @@ static inline bool boct_oid_to_lonlat(double cx, double cy, int oid,
     return cxcy_to_lonlat(cx, cy, oid, lon, lat, nullptr, /*strict=*/false);
 }
 
+/* ── Warped octahedral cartesian (w_oct): the 3D storage CRS ─────────────────
+ *
+ * The pure per-oid rotation lift of the WARPED b_oct (as hex9_project emits it)
+ * into 3D — steps 1-3 of cxcy_to_lonlat WITHOUT the warp_fwd step, because
+ * b_oct is already the authalic frame. Rows 0,1 of H9_BRAW_M sum to 0 and row 2
+ * to ±1/sqrt(3)·(1/sqrt(3)), so the result always lands on the unit octahedron
+ * plane X+Y+Z=±1 (|X|+|Y|+|Z|=1) and sign(X,Y,Z) == oid. This is a DIFFERENT
+ * domain from the pre-warp H9BOct.u/v/w (which lifts b_raw): same lift geometry,
+ * warped source. b_oct <-> xyz is rotation only; the warp is upstream in
+ * lon/lat <-> b_oct. */
+static inline void boct_to_woct(double cx, double cy, int oid, double xyz[3]) {
+    const double th = H9_BRAW_TH_PI3[oid] * (M_PI / 3.0);
+    const double ct = std::cos(th), st = std::sin(th);
+    const double rx = cx * ct - cy * st;
+    const double ry = cx * st + cy * ct;
+    const double rz = 1.0 / std::sqrt(3.0);
+    const double (*M)[3] = H9_BRAW_M[oid];
+    xyz[0] = rx * M[0][0] + ry * M[1][0] + rz * M[2][0];
+    xyz[1] = rx * M[0][1] + ry * M[1][1] + rz * M[2][1];
+    xyz[2] = rx * M[0][2] + ry * M[1][2] + rz * M[2][2];
+}
+
+/* Inverse of boct_to_woct: unit-octahedron xyz → WARPED b_oct (cx, cy, oid).
+ * oid comes from the sign octant (::oid carries the mode-0 seam rule for
+ * exact-zero axes); then the inverse rotation lift (M orthogonal ⇒ M^-1 = M^T,
+ * as in lonlatdeg_to_cxcy_oid). No warp. */
+static inline void woct_to_boct(const double xyz[3], double *cx, double *cy,
+                                int *oid_out) {
+    const int o = (int)::oid(xyz[0], xyz[1], xyz[2]);
+    *oid_out = o;
+    const double (*M)[3] = H9_BRAW_M[o];
+    const double rx = xyz[0] * M[0][0] + xyz[1] * M[0][1] + xyz[2] * M[0][2];
+    const double ry = xyz[0] * M[1][0] + xyz[1] * M[1][1] + xyz[2] * M[1][2];
+    const double th = -H9_BRAW_TH_PI3[o] * (M_PI / 3.0);
+    const double ct = std::cos(th), st = std::sin(th);
+    *cx = rx * ct - ry * st;
+    *cy = rx * st + ry * ct;
+}
+
 /* Integer-UV (pu, pv) at layer L → geographic (lon, lat). */
 static inline bool uv_to_lonlat(int64_t pu, int64_t pv, int oid, double div_f,
                                 double *lon, double *lat, H9BOct *bc_out = nullptr) {

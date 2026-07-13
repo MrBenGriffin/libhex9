@@ -151,6 +151,45 @@ int  hex9_unproject(double cx, double cy, int oid, double *lon, double *lat);
 int  hex9_unproject_many(const double *cx, const double *cy, const int *oid,
                          size_t n, double *lon, double *lat);
 
+/* ── Warped octahedral cartesian CRS (w_oct): the 3D storage baseline ───────
+ *
+ * A seamless 3D coordinate for the whole sphere — the octahedral analogue of
+ * ECEF. xyz lies on the unit octahedron (|x|+|y|+|z| == 1), and the octant id
+ * is implicit in the sign octant: oid == ((z<0)<<2)|((y<0)<<1)|(x<0). So a 3D
+ * octree rooted at the origin splits into the 8 octants at level 1, and the
+ * point's position IS its address (bin it with the encoder to any layer). There
+ * is NO seam and NO cone-point handling: a 2-sphere embeds in 3D losslessly, so
+ * the flattening obstruction that forces a cut in any 2D map simply does not
+ * arise here. (The 2D octahedral net is a rendering device, not this.)
+ *
+ * This is the POST-WARP octahedral cartesian: the pure per-oid rotation lift of
+ * the WARPED b_oct that hex9_project emits. b_oct <-> xyz is a rotation only;
+ * the authalic warp lives entirely upstream, in lon/lat <-> b_oct. So the
+ * addressing pipeline for a stored point is xyz -> b_oct (hex9_woct_to_boct) ->
+ * descent (hex9_bin / hex9_encode), with NO warp re-applied. It is a distinct
+ * domain from the pre-warp geometric octahedral cartesian (c_oct, which lifts
+ * b_raw off the WGS84 ellipsoid) — same lift geometry, warped source. Named
+ * w_oct to match hhg9, where c_oct is load-bearing.
+ *
+ * ALTITUDE is orthogonal: store a straight WGS84 altitude (reference units)
+ * alongside these coordinates; it is never folded into the octahedral radius.
+ *
+ *   - hex9_to_woct / hex9_from_woct         : WGS84 lon/lat <-> xyz (cross the warp).
+ *   - hex9_boct_to_woct / hex9_woct_to_boct : b_oct (cx,cy,oid) <-> xyz (rotation only).
+ *   xyz is 3 doubles; the _many forms are row-major (item i at xyz + i*3) and
+ *   parallelise with OpenMP. Return 0 on success.
+ */
+int  hex9_to_woct(double lon, double lat, double xyz[3]);
+int  hex9_from_woct(const double xyz[3], double *lon, double *lat);
+int  hex9_boct_to_woct(double cx, double cy, int oid, double xyz[3]);
+int  hex9_woct_to_boct(const double xyz[3], double *cx, double *cy, int *oid);
+int  hex9_to_woct_many(const double *lon, const double *lat, size_t n, double *xyz);
+int  hex9_from_woct_many(const double *xyz, size_t n, double *lon, double *lat);
+int  hex9_boct_to_woct_many(const double *cx, const double *cy, const int *oid,
+                            size_t n, double *xyz);
+int  hex9_woct_to_boct_many(const double *xyz, size_t n,
+                            double *cx, double *cy, int *oid);
+
 /* ── Labels ────────────────────────────────────────────────────────────────
  * Write a NUL-terminated label for the UUID at `layer` into buf. Returns the
  * string length (excluding NUL), or -1 on error / insufficient buffer.
