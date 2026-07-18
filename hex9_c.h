@@ -114,6 +114,139 @@ int  hex9_cell_ancestor(const uint8_t uuid[16], int layer, uint8_t out_uuid[16])
 int  hex9_cell_ancestor_many(const uint8_t *uuid, int layer, size_t n,
                              uint8_t *out_uuid);
 
+/* ── Hamiltonian curve addressing (space-filling curve) ────────────────────
+ *
+ * The H9 space-filling curve visits every layer-L cell exactly once, in an
+ * order that is edge-adjacent between consecutive indices (local
+ * Hamiltonicity) and REFINES: a cell's 9 lineage children occupy curve
+ * indices index*9 .. index*9+8. Emitted by a closed 36-state transducer
+ * walked down the cell's lineage chain (core/h9_curve.h; tables verbatim
+ * from hhg9, machine-verified closure). Its two jobs are SORTING (curve
+ * order is locality order — ORDER BY / CLUSTER / point-cloud ordering) and
+ * GENERATION (enumerate a region's cells in locality order).
+ *
+ * The packed CURVE-UUID is the sortable form: nibble 0 = 0xC (type marker —
+ * an h9-uuid's nibble 0 is a root digit 0..11, so the two kinds coexist in
+ * one column; curve-uuids sort after all h9-uuids), nibble 1 = axiom slot,
+ * then one base-9 rank nibble per layer, 0xF-padded. Bytewise uuid order at
+ * a fixed layer IS curve order. Unlike an h9-uuid body, a curve-uuid
+ * truncates EXACTLY: dropping rank nibbles gives the lineage ancestor's
+ * curve address (hex9_curve_bin — no fold, no geometry). NOTE in
+ * mixed-layer collections the 0xF padding makes an ancestor sort AFTER its
+ * descendants (post-order); at one layer, or grouped by layer, order is the
+ * curve itself.
+ *
+ * hex9_curve accepts a canonical bin uuid at any layer (from hex9_bin /
+ * hex9_grid / hex9_adaptive) or a full uuid (re-binned canonically at its
+ * own depth first); a curve-uuid passes through unchanged. The curve is
+ * defined on canonical hexagon bins. Encode is pure address arithmetic —
+ * exact at any depth. Returns 0 on success, non-zero on malformed input
+ * (a T1 transducer miss means a NON-CANONICAL address, never a table gap).
+ */
+int  hex9_curve(const uint8_t uuid[16], uint8_t out_curve[16]);
+int  hex9_curve_many(const uint8_t *uuid, size_t n, uint8_t *out_curve);
+
+/* Constructive inverse: curve-uuid -> the cell's canonical bin uuid at the
+ * curve address's layer. Forward-fits from the root, selecting each child
+ * from the parent's 9 canonical children (one bounded child-oracle call
+ * per level). An h9-uuid input passes through unchanged. Returns 0 on
+ * success. */
+int  hex9_curve_decode(const uint8_t curve[16], uint8_t out_uuid[16]);
+int  hex9_curve_decode_many(const uint8_t *curve, size_t n, uint8_t *out_uuid);
+
+/* 1 if uuid[16] is a packed curve-uuid (nibble 0 == 0xC — positional test
+ * only), else 0. */
+int  hex9_is_curve(const uint8_t uuid[16]);
+
+/* Layer of a packed curve-uuid (0..lmax), or -1 if not a curve-uuid. */
+int  hex9_curve_layer(const uint8_t curve[16]);
+
+/* Layer-`layer` curve ancestor — PURE PREFIX TRUNCATION of the rank
+ * nibbles, exact on the curve/lineage tree (contrast hex9_bin's fossil
+ * caveats: the curve-uuid has no such defect). Input must be a curve-uuid
+ * at >= layer. Returns 0 on success. */
+int  hex9_curve_bin(const uint8_t curve[16], int layer, uint8_t out_curve[16]);
+
+/* Curve index as a DECIMAL STRING (indices reach 12*9^L - 1, overflowing
+ * int64 above L18; the string feeds SQL numeric / Python int exactly).
+ * Accepts an h9 uuid (encoded first) or a curve-uuid (pure arithmetic).
+ * Writes the NUL-terminated numeral into buf (40 bytes always suffice);
+ * returns the string length, or -1 on error. */
+int  hex9_curve_index(const uint8_t uuid[16], char *buf, size_t buflen);
+
+/* Curve-uuid from a decimal index string at a given layer (the inverse of
+ * hex9_curve_index on the representation; a bare index does not
+ * self-describe its layer). Returns 0 on success, non-zero for a malformed
+ * numeral or an index out of range for the layer. */
+int  hex9_curve_pack(const char *index_dec, int layer, uint8_t out_curve[16]);
+
+/* Human-readable curve label 'c<slot hex char><base-9 rank chars>' (e.g.
+ * 'c112504'; purely positional, length carries the layer). Accepts an h9
+ * uuid (encoded first) or a curve-uuid. Returns the string length, or -1
+ * on error / insufficient buffer (40 bytes always suffice). */
+int  hex9_curve_label(const uint8_t uuid[16], char *buf, size_t buflen);
+
+/* Parse a curve label back to a curve-uuid. Returns 0 on success. */
+int  hex9_curve_parse_label(const char *label, uint8_t out_curve[16]);
+
+/* Number of layer-`to_layer` descendants of a layer-`from_layer` cell:
+ * 9^(to_layer - from_layer). Returns -1 on bad layers or int64 overflow
+ * (depth difference > 19). */
+int64_t hex9_curve_ncells(int from_layer, int to_layer);
+
+/* Enumerate every layer-`layer` LINEAGE descendant of a cell IN CURVE
+ * ORDER (the generation primitive: emit order == ascending curve index).
+ * The lineage relation — iterated one-generation canonical parents, the
+ * curve's own tree — is transitive and exactly 9^d per cell, but its
+ * descendant sets displace 1/6 of the ancestor's area (hexagon-band
+ * spelling); for the geometrically-bounded partition use
+ * hex9_owned_cells. `uuid` is an h9 bin/full uuid or a curve-uuid
+ * (decoded first); `layer` >= the cell's own layer. Writes bin uuids to
+ * out_bins (n*16 bytes, required) and, when out_curves is non-NULL, the
+ * matching curve-uuids. Both arrays hold
+ * hex9_curve_ncells(cell_layer, layer) rows; the call fails if that
+ * exceeds max_cells. Returns the count, or -1 on error. */
+int64_t hex9_curve_cells(const uint8_t uuid[16], int layer,
+                         uint8_t *out_bins, uint8_t *out_curves,
+                         int64_t max_cells);
+
+/* ── Lineage vs ownership: the two exact hierarchy relations ───────────────
+ *
+ * Every cell has exactly 9 canonical one-generation children (the two
+ * relations coincide there), but beyond one generation they diverge on
+ * hexagon-band cells (~1/9 of cells per extra level):
+ *
+ *   LINEAGE   — iterated one-generation parents (hex9_cell_parent, the
+ *               curve tree). Transitive; curve-prefix truncation IS the
+ *               lineage ancestor; 1/6 of descendant area displaced.
+ *   OWNERSHIP — the direct deep fold (hex9_cell_ancestor). NOT
+ *               transitive; geometrically bounded (only rim splits
+ *               protrude, by their far half); owned sets PARTITION every
+ *               layer at exactly 9^d per zone.
+ *
+ * This is the "owned sub-zone" relation proposed for OGC API — DGGS
+ * (opengeospatial/ogcapi-discrete-global-grid-systems#108): sub-zones
+ * give coverage, identifiers give lineage, aggregation needs ownership.
+ */
+
+/* The 9 canonical children of a cell (one generation — lineage ==
+ * ownership), IN CURVE-RANK ORDER (the deterministic order the curve
+ * induces). Input is an h9 bin/full uuid or a curve-uuid. out_uuids holds
+ * 9*16 bytes. Returns 0 on success; 1 for a cell at lmax (no children)
+ * or malformed input. */
+int  hex9_cell_children(const uint8_t uuid[16], uint8_t *out_uuids);
+
+/* Enumerate every layer-`layer` OWNED sub-zone of a cell — the cells
+ * whose hex9_cell_ancestor at the cell's layer IS the cell — exactly
+ * 9^(layer - cell_layer), CURVE-SORTED. The owned sets over all zones at
+ * one layer partition the globe, so aggregation by owned sub-zone is
+ * loss-free and double-count-free. Same signature conventions as
+ * hex9_curve_cells (h9 bin default in out_bins; curve-uuids optional).
+ * Returns the count, or -1 on error. */
+int64_t hex9_owned_cells(const uint8_t uuid[16], int layer,
+                         uint8_t *out_bins, uint8_t *out_curves,
+                         int64_t max_cells);
+
 /* ── Continuous projection (b_oct backend) ─────────────────────────────────
  *
  * Forward map ONLY — no descent, no layer, no L29 cap. Writes the continuous

@@ -141,6 +141,10 @@ add_executable(bin_prefix_guard test/bin_prefix_guard.c)
 target_link_libraries(bin_prefix_guard PRIVATE hex9)
 add_test(NAME bin_prefix_guard COMMAND bin_prefix_guard)
 
+add_executable(curve test/curve.c)
+target_link_libraries(curve PRIVATE hex9)
+add_test(NAME curve COMMAND curve)
+
 add_executable(full_id test/full_id.c)
 target_link_libraries(full_id PRIVATE hex9)
 add_test(NAME full_id COMMAND full_id)

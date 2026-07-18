@@ -44,6 +44,7 @@ private:
     std::vector<Spec> m_specs;
     Dimension::Id m_weight{Dimension::Id::Unknown};
     Dimension::Id m_dLayer, m_dCount, m_dValue, m_dBinHi, m_dBinLo;
+    Dimension::Id m_dCurveHi, m_dCurveLo;
 
     void addArgs(ProgramArgs& args) override;
     void addDimensions(PointLayoutPtr layout) override;

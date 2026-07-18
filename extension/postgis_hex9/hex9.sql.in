@@ -434,3 +434,225 @@ CREATE OR REPLACE FUNCTION h9_adaptive(
     AS 'MODULE_PATHNAME', 'h9_adaptive'
     LANGUAGE 'c' IMMUTABLE CALLED ON NULL INPUT PARALLEL SAFE
     ROWS 100 COST 1000;
+
+-- ── Hamiltonian curve addressing (space-filling curve) ───────────────────────
+--
+--   The H9 space-filling curve visits every layer-L cell exactly once, in an
+--   order that is edge-adjacent between consecutive indices and REFINES: a
+--   cell's 9 lineage children occupy curve indices index*9 .. index*9+8.
+--   Its two jobs are SORTING (curve order is locality order) and GENERATION
+--   (enumerate a region's cells in locality order).
+--
+--   The packed CURVE-UUID is the sortable form (nibble 0 = 'c' marks it; the
+--   rest is the axiom slot + one base-9 rank nibble per layer, f-padded).
+--   Native uuid btree order over curve-uuids AT ONE LAYER is exactly curve
+--   order, so locality clustering needs no new types or operators:
+--
+--       ALTER TABLE pings ADD COLUMN curve uuid
+--           GENERATED ALWAYS AS (h9_curve(h9_bin(h9_id, 12))) STORED;
+--       CREATE INDEX ON pings (curve);
+--       CLUSTER pings USING pings_curve_idx;      -- locality-ordered heap
+--
+--   NOTE in MIXED-layer collections the f-padding makes an ancestor sort
+--   AFTER its descendants (post-order); group or filter by h9_curve_layer
+--   when mixing layers. Unlike an h9-uuid body, a curve-uuid truncates
+--   EXACTLY: h9_curve_bin is pure prefix truncation and yields the LINEAGE
+--   ancestor's curve address (the curve tree is iterated one-generation
+--   canonical parents — cf. h9_cell_parent, not the deep-fold
+--   h9_cell_ancestor).
+
+-- h9_cell_parent(uuid) → uuid
+--   Canonical CELL parent of a layer-L bin (mode-0 convention): the single
+--   layer-(L-1) cell containing the cell's mode-0 d_cell. This is the
+--   curve's generation step — the curve/lineage tree is ITERATED
+--   one-generation parents. Distinct from h9_bin, which answers the POINT
+--   question (and is only guaranteed from a full uuid). Every parent has
+--   exactly 9 canonical children. Errors on an L0 input.
+--
+-- Availability: Hex9 1.5.0 (ABI since 1.4.0)
+CREATE OR REPLACE FUNCTION h9_cell_parent(uuid)
+    RETURNS uuid
+    AS 'MODULE_PATHNAME', 'h9_cell_parent'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 10;
+
+-- h9_cell_ancestor(uuid, integer) → uuid
+--   Canonical layer-L ancestor of a bin — the DIRECT deep fold (exact at
+--   any depth), NOT the iterated one-generation parent: the two relations
+--   differ on hexagon-band cells beyond one generation (composing parents
+--   re-adjudicates splits every layer). Pass-through when already at L.
+--
+-- Availability: Hex9 1.5.0 (ABI since 1.4.0)
+CREATE OR REPLACE FUNCTION h9_cell_ancestor(uuid, integer)
+    RETURNS uuid
+    AS 'MODULE_PATHNAME', 'h9_cell_ancestor'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 10;
+
+-- h9_curve(uuid) → uuid
+--   Curve-uuid of a cell. Accepts a canonical bin uuid at any layer (from
+--   h9_bin / h9_grid / h9_adaptive), a full uuid from h9_encode (re-binned
+--   canonically at its own depth first), or a curve-uuid (returned as-is).
+--   Encode is pure address-table arithmetic — exact at any depth.
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve(uuid)
+    RETURNS uuid
+    AS 'MODULE_PATHNAME', 'h9_curve'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 50;
+
+-- h9_curve_decode(uuid) → uuid
+--   Constructive inverse: the canonical bin uuid of a curve address, at the
+--   curve address's own layer. An h9-uuid input passes through unchanged.
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve_decode(uuid)
+    RETURNS uuid
+    AS 'MODULE_PATHNAME', 'h9_curve_decode'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 500;
+
+-- h9_is_curve(uuid) → boolean
+--   True when the uuid is a packed curve address (nibble 0 = 'c').
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_is_curve(uuid)
+    RETURNS boolean
+    AS 'MODULE_PATHNAME', 'h9_is_curve'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 1;
+
+-- h9_curve_layer(uuid) → integer
+--   Layer of a curve-uuid (0..h9_lmax()).
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve_layer(uuid)
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'h9_curve_layer'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 1;
+
+-- h9_curve_bin(uuid, integer) → uuid
+--   Layer-L curve ancestor — PURE PREFIX TRUNCATION of the rank nibbles,
+--   exact on the curve/lineage tree (no fold, no geometry). Input must be a
+--   curve-uuid at a layer >= L. This is the safe cross-layer coarsening the
+--   h9-uuid body famously lacks (docs/addressing-doctrine.md F3): group
+--   deep curve keys by h9_curve_bin(curve, L) freely.
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve_bin(uuid, integer)
+    RETURNS uuid
+    AS 'MODULE_PATHNAME', 'h9_curve_bin'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 5;
+
+-- h9_curve_index(uuid) → numeric
+--   Position on the curve as a number, 0 .. 12*9^L - 1 (numeric: it exceeds
+--   bigint above layer 18). Accepts an h9 uuid (encoded first) or a
+--   curve-uuid (pure arithmetic). The index is the same numeral the
+--   curve-uuid packs, so ORDER BY h9_curve_index == ORDER BY h9_curve at
+--   one layer — use the uuid for storage/indexes, the numeric for
+--   arithmetic (ranges, striding, partitioning).
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve_index(uuid)
+    RETURNS numeric
+    AS 'MODULE_PATHNAME', 'h9_curve_index'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 50;
+
+-- h9_curve_pack(numeric, integer) → uuid
+--   Curve-uuid from a plain curve index at a known layer (the inverse of
+--   h9_curve_index on the representation; a bare index does not
+--   self-describe its layer).
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve_pack(numeric, integer)
+    RETURNS uuid
+    AS 'MODULE_PATHNAME', 'h9_curve_pack'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 5;
+
+-- h9_curve_label(uuid) → text
+--   Human-readable curve address: 'c' + slot hex char + base-9 rank chars,
+--   e.g. 'c112504' (length carries the layer; empty ranks at L0). Accepts
+--   an h9 uuid (encoded first) or a curve-uuid.
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve_label(uuid)
+    RETURNS text
+    AS 'MODULE_PATHNAME', 'h9_curve_label'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 50;
+
+-- h9_curve_from_label(text) → uuid
+--   Parse a curve label back to a curve-uuid.
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve_from_label(text)
+    RETURNS uuid
+    AS 'MODULE_PATHNAME', 'h9_curve_from_label'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    COST 5;
+
+-- h9_curve_cells(uuid, integer) → TABLE(h9_bin uuid, h9_curve uuid)
+--   The GENERATION primitive: every layer-L LINEAGE descendant of the
+--   cell (iterated one-generation canonical children — the curve's own
+--   tree), emitted IN CURVE ORDER (ascending curve index), as (bin key,
+--   curve key) pairs — 9^(L - cell_layer) rows, capped by
+--   hex9.grid_max_cells. Input is an h9 bin/full uuid or a curve-uuid.
+--   Lineage is transitive and prefix-exact on curve-uuids, but its
+--   descendant sets displace 1/6 of the ancestor's area — for the
+--   geometrically-bounded aggregation partition use h9_owned_cells.
+--
+--   Example — synthesize an L6 dataset over Edinburgh's L2 cell, written
+--   in locality order (neighbouring rows are neighbouring cells):
+--     SELECT c.h9_bin, c.h9_curve, h9_cell(c.h9_bin, 6) AS geom
+--     FROM h9_curve_cells(h9_bin(h9_encode(
+--              ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326)), 2), 6) AS c;
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_curve_cells(uuid, integer)
+    RETURNS TABLE(h9_bin uuid, h9_curve uuid)
+    AS 'MODULE_PATHNAME', 'h9_curve_cells'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    ROWS 729 COST 5000;
+
+-- h9_cell_children(uuid) → SETOF uuid
+--   The 9 canonical children of a cell, in CURVE-RANK order (one
+--   generation — the lineage and ownership readings coincide here).
+--   Input is an h9 bin/full uuid or a curve-uuid; errors at h9_lmax().
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_cell_children(uuid)
+    RETURNS SETOF uuid
+    AS 'MODULE_PATHNAME', 'h9_cell_children'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    ROWS 9 COST 500;
+
+-- h9_owned_cells(uuid, integer) → TABLE(h9_bin uuid, h9_curve uuid)
+--   The AGGREGATION primitive: every layer-L OWNED sub-zone of the cell —
+--   the cells whose h9_cell_ancestor at the cell's layer IS the cell.
+--   Exactly 9^(L - cell_layer) rows, and the owned sets over all zones at
+--   one layer PARTITION the globe: aggregation by owned sub-zone is
+--   loss-free and double-count-free (the "owned sub-zone" relation of
+--   OGC API-DGGS issue #108 — sub-zones give coverage, identifiers give
+--   lineage, aggregation needs ownership). Ownership is geometrically
+--   bounded (only rim splits protrude, by their far half) but NOT
+--   transitive; the lineage set (h9_curve_cells) is the transitive one.
+--   Rows are CURVE-SORTED; the h9 bin is the primary key form (h9→curve
+--   is the cheap direction). Capped by hex9.grid_max_cells.
+--
+--   Example — loss-free roll-up of an L6 population column to L4 zones:
+--     SELECT o.h9_bin AS zone, sum(p.pop)
+--     FROM zones z, h9_owned_cells(z.h9_bin, 6) o
+--     JOIN pop_l6 p ON p.h9_bin = o.h9_bin
+--     GROUP BY 1;
+--
+-- Availability: Hex9 1.5.0
+CREATE OR REPLACE FUNCTION h9_owned_cells(uuid, integer)
+    RETURNS TABLE(h9_bin uuid, h9_curve uuid)
+    AS 'MODULE_PATHNAME', 'h9_owned_cells'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
+    ROWS 729 COST 5000;

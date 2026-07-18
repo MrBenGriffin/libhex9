@@ -12,6 +12,7 @@
 #include "h9_uv_lattice.h"
 #include "h9_grid.h"
 #include "h9_kring.h"
+#include "h9_curve.h"
 #include "h9_cell_geom.h"
 #include "h9_warp_runtime.h"
 
@@ -233,6 +234,201 @@ extern "C" int hex9_cell_ancestor_many(const uint8_t *uuid, int layer, size_t n,
         rc |= h9kring::h9_cell_ancestor_uuid(uuid + (size_t)i * 16, layer,
                                             out_uuid + (size_t)i * 16) ? 0 : 1;
     return rc;
+}
+
+/* ── Hamiltonian curve addressing ───────────────────────────────────────────
+ * Surface over core/h9_curve.h (36-state transducer; tables verbatim from
+ * hhg9). Input normalisation policy: a curve-uuid passes through; a
+ * canonical bin is trusted as-is (like the cell parent/ancestor family); a
+ * full/reversible uuid is re-binned canonically at its own depth through
+ * canonical_bin — the SAME path hex9_bin takes, so curve(encode(pt)) and
+ * curve(bin(encode(pt), L)) agree with h9_grid / Python at every layer. */
+
+/* Shared kernel: uuid (h9 or curve) -> curve rows + layer. */
+static int curve_rows_of(const uint8_t uuid[16], uint8_t *rows) {
+    if (h9curve::is_curve_uuid(uuid))
+        return h9curve::curve_unpack(uuid, rows);
+    bool rebin = false;
+    const int L = h9curve::curve_input_layer(uuid, &rebin);
+    if (L < 0) return -1;
+    uint8_t bin[16];
+    if (rebin)
+        canonical_bin(uuid, L, bin);
+    else
+        std::memcpy(bin, uuid, 16);
+    if (!h9curve::curve_rows_from_bin(bin, L, rows, nullptr)) return -1;
+    return L;
+}
+
+extern "C" int hex9_curve(const uint8_t uuid[16], uint8_t out_curve[16]) {
+    uint8_t rows[H9_NLEVELS];
+    const int L = curve_rows_of(uuid, rows);
+    if (L < 0) return 1;
+    h9curve::curve_pack_rows(rows, L, out_curve);
+    return 0;
+}
+
+extern "C" int hex9_curve_many(const uint8_t *uuid, size_t n, uint8_t *out_curve) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= hex9_curve(uuid + (size_t)i * 16, out_curve + (size_t)i * 16);
+    return rc;
+}
+
+extern "C" int hex9_curve_decode(const uint8_t curve[16], uint8_t out_uuid[16]) {
+    if (!h9curve::is_curve_uuid(curve)) {           /* h9-uuid passes through */
+        if (h9curve::curve_input_layer(curve, nullptr) < 0) return 1;
+        std::memcpy(out_uuid, curve, 16);
+        return 0;
+    }
+    return h9curve::curve_decode_to_bin(curve, out_uuid) ? 0 : 1;
+}
+
+extern "C" int hex9_curve_decode_many(const uint8_t *curve, size_t n,
+                                      uint8_t *out_uuid) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= hex9_curve_decode(curve + (size_t)i * 16, out_uuid + (size_t)i * 16);
+    return rc;
+}
+
+extern "C" int hex9_is_curve(const uint8_t uuid[16]) {
+    return h9curve::is_curve_uuid(uuid) ? 1 : 0;
+}
+
+extern "C" int hex9_curve_layer(const uint8_t curve[16]) {
+    uint8_t rows[H9_NLEVELS];
+    if (!h9curve::is_curve_uuid(curve)) return -1;
+    return h9curve::curve_unpack(curve, rows);
+}
+
+extern "C" int hex9_curve_bin(const uint8_t curve[16], int layer,
+                              uint8_t out_curve[16]) {
+    uint8_t rows[H9_NLEVELS];
+    if (!h9curve::is_curve_uuid(curve)) return 1;
+    const int L = h9curve::curve_unpack(curve, rows);
+    if (L < 0 || layer < 0 || layer > L) return 1;
+    h9curve::curve_pack_rows(rows, layer, out_curve);
+    return 0;
+}
+
+extern "C" int hex9_curve_index(const uint8_t uuid[16], char *buf, size_t buflen) {
+    uint8_t rows[H9_NLEVELS];
+    const int L = curve_rows_of(uuid, rows);
+    if (L < 0) return -1;
+    return h9curve::curve_index_decimal(rows, L, buf, buflen);
+}
+
+extern "C" int hex9_curve_pack(const char *index_dec, int layer,
+                               uint8_t out_curve[16]) {
+    if (layer < 0 || layer > H9_LMAX) return 1;
+    uint8_t rows[H9_NLEVELS];
+    if (!h9curve::curve_rows_from_decimal(index_dec, layer, rows)) return 1;
+    h9curve::curve_pack_rows(rows, layer, out_curve);
+    return 0;
+}
+
+extern "C" int hex9_curve_label(const uint8_t uuid[16], char *buf, size_t buflen) {
+    uint8_t rows[H9_NLEVELS];
+    const int L = curve_rows_of(uuid, rows);
+    if (L < 0) return -1;
+    if (buflen < (size_t)L + 3) return -1;          /* 'c' + slot + L ranks + NUL */
+    buf[0] = 'c';
+    buf[1] = (char)(rows[0] < 10 ? '0' + rows[0] : 'a' + rows[0] - 10);
+    for (int k = 1; k <= L; ++k) buf[1 + k] = (char)('0' + rows[k]);
+    buf[L + 2] = '\0';
+    return L + 2;
+}
+
+extern "C" int hex9_curve_parse_label(const char *label, uint8_t out_curve[16]) {
+    if (!label || label[0] != 'c' || !label[1]) return 1;
+    const char sc = label[1];
+    uint8_t rows[H9_NLEVELS];
+    if (sc >= '0' && sc <= '9') rows[0] = (uint8_t)(sc - '0');
+    else if (sc == 'a' || sc == 'b') rows[0] = (uint8_t)(sc - 'a' + 10);
+    else return 1;
+    int L = 0;
+    for (const char *p = label + 2; *p; ++p) {
+        if (*p < '0' || *p > '8' || L >= H9_LMAX) return 1;
+        rows[++L] = (uint8_t)(*p - '0');
+    }
+    h9curve::curve_pack_rows(rows, L, out_curve);
+    return 0;
+}
+
+extern "C" int64_t hex9_curve_ncells(int from_layer, int to_layer) {
+    if (from_layer < 0 || to_layer < from_layer || to_layer > H9_LMAX) return -1;
+    const int g = to_layer - from_layer;
+    if (g > 19) return -1;                           /* 9^20 overflows int64 */
+    int64_t n = 1;
+    for (int i = 0; i < g; ++i) n *= 9;
+    return n;
+}
+
+/* Shared input resolution for the enumeration family: h9 bin trusted,
+ * full uuid re-binned canonically, curve-uuid decoded. Returns the cell's
+ * own layer, or -1. */
+static int curve_cell_input(const uint8_t uuid[16], uint8_t anc[16]) {
+    if (h9curve::is_curve_uuid(uuid)) {
+        if (!h9curve::curve_decode_to_bin(uuid, anc)) return -1;
+    } else {
+        bool rebin = false;
+        const int L = h9curve::curve_input_layer(uuid, &rebin);
+        if (L < 0) return -1;
+        if (rebin) canonical_bin(uuid, L, anc);
+        else       std::memcpy(anc, uuid, 16);
+    }
+    uint8_t nib[32];
+    h9a_unpack(anc, nib);
+    return h9curve::curve_body_layer(nib);
+}
+
+extern "C" int64_t hex9_curve_cells(const uint8_t uuid[16], int layer,
+                                    uint8_t *out_bins, uint8_t *out_curves,
+                                    int64_t max_cells) {
+    if (layer < 0 || layer > H9_LMAX || !out_bins) return -1;
+    uint8_t anc[16];
+    const int from = curve_cell_input(uuid, anc);
+    if (from < 0) return -1;
+    const int64_t want = hex9_curve_ncells(from, layer);
+    if (want < 0 || want > max_cells) return -1;
+    uint8_t rows[H9_NLEVELS];
+    int state = 0;
+    if (!h9curve::curve_rows_from_bin(anc, from, rows, &state)) return -1;
+    int64_t count = 0;
+    if (!h9curve::curve_cells_rec(anc, from, state, layer, rows,
+                                  out_bins, out_curves, &count))
+        return -1;
+    return count;
+}
+
+extern "C" int hex9_cell_children(const uint8_t uuid[16], uint8_t *out_uuids) {
+    if (!out_uuids) return 1;
+    uint8_t cell[16];
+    const int L = curve_cell_input(uuid, cell);
+    if (L < 0 || L >= H9_LMAX) return 1;
+    uint8_t rows[H9_NLEVELS];
+    int state = 0;
+    if (!h9curve::curve_rows_from_bin(cell, L, rows, &state)) return 1;
+    uint8_t kids[9][16];
+    if (!h9curve::curve_children_ranked(cell, L, state, kids)) return 1;
+    std::memcpy(out_uuids, kids, 9 * 16);
+    return 0;
+}
+
+extern "C" int64_t hex9_owned_cells(const uint8_t uuid[16], int layer,
+                                    uint8_t *out_bins, uint8_t *out_curves,
+                                    int64_t max_cells) {
+    if (layer < 0 || layer > H9_LMAX || !out_bins) return -1;
+    uint8_t zone[16];
+    const int from = curve_cell_input(uuid, zone);
+    if (from < 0 || layer < from) return -1;
+    return h9curve::curve_owned_cells(zone, from, layer,
+                                      out_bins, out_curves, max_cells);
 }
 
 /* ── Continuous projection (b_oct backend) ──────────────────────────────────
@@ -505,13 +701,16 @@ extern "C" int hex9_common_ancestor(const uint8_t *uuids, size_t n, int layer,
     if (shared == 0) return -1;                /* cells span L0 hexes */
 
     const int anc_layer = shared - 1;
-    /* Canonical labels are prefix-hierarchical, so the ancestor's label is
-     * the shared prefix of the (canonical) first body, and its canonical
-     * bin is recovered exactly by the label parser's verified tail search.
-     * (Do NOT go through normalize_bin/h9_bin_uuid here: their key tail is
-     * the deep backward-walk context, which at coarse layers is not the
-     * identity-decodable canonical tail.) */
-    if (hex9_label(first, anc_layer, buf, buflen) < 0) return -1;
+    /* The ancestor's label IS the shared nibble prefix (write_label is a
+     * pure nibble->char map); its canonical bin is recovered by the label
+     * parser's verified tail search. Do NOT label via hex9_label(first,
+     * anc_layer): that re-coarsens the bin through the identity/context
+     * walk — the F3 fossil path, unguaranteed for bins below their own
+     * layer (it mislabelled GB's L1 ancestor '43' as '65' on the L30
+     * layout). The prefix needs no walk at all. */
+    if (buflen < (size_t)shared + 1) return -1;
+    write_label(fnib, anc_layer, buf);
+    buf[shared] = '\0';
     uint8_t anc[16];
     if (hex9_parse_label(buf, anc) != anc_layer) return -1;
     if (out_uuid) std::memcpy(out_uuid, anc, 16);

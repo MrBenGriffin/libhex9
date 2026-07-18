@@ -7,7 +7,7 @@ file(WRITE "${pipe}"
 "[
   {\"type\":\"readers.text\",\"filename\":\"${PTS}\",\"spatialreference\":\"EPSG:4326\"},
   {\"type\":\"filters.hex9bin\",\"min_layer\":4,\"max_layer\":9,\"ceiling\":25,\"floor\":4,\"aggregates\":\"Z:mean,Z:max,Z:min,Classification:mode,Intensity:mean\"},
-  {\"type\":\"writers.text\",\"filename\":\"${out}\",\"order\":\"H9Layer,H9Count,H9Value,Z,ZMax,ZMin,Classification,Intensity\",\"keep_unspecified\":\"false\",\"precision\":6}
+  {\"type\":\"writers.text\",\"filename\":\"${out}\",\"order\":\"H9Layer,H9Count,H9Value,Z,ZMax,ZMin,Classification,Intensity,H9CurveHi,H9CurveLo\",\"keep_unspecified\":\"false\",\"precision\":6}
 ]")
 
 set(ENV{PDAL_DRIVER_PATH} "${DRIVER_DIR}")

@@ -92,7 +92,9 @@ cell_parent(u8_2d_in uuid) {
     return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
 }
 
-/* cell_ancestor(uuid[n,16], layer) -> uint8[n,16] — iterated cell parent */
+/* cell_ancestor(uuid[n,16], layer) -> uint8[n,16] — the OWNERSHIP relation:
+ * direct deep fold, NOT iterated cell_parent (they differ on hexagon-band
+ * cells beyond one generation). */
 static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
 cell_ancestor(u8_2d_in uuid, int layer) {
     const size_t n = uuid.shape(0);
@@ -106,6 +108,87 @@ cell_ancestor(u8_2d_in uuid, int layer) {
     if (rc) { delete[] out; throw std::runtime_error("hex9.cell_ancestor: input coarser than target layer (or layer/uuid invalid)"); }
     nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
     return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
+/* curve(uuid[n,16]) -> uint8[n,16] — packed curve-uuids (0xC marker). */
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
+curve(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    uint8_t *out = new uint8_t[n * 16];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = hex9_curve_many(uuid.data(), n, out);
+    }
+    if (rc) { delete[] out; throw std::runtime_error("hex9.curve: malformed or non-canonical uuid in batch"); }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
+/* curve_decode(curve[n,16]) -> uint8[n,16] — canonical bins (h9-uuids pass). */
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
+curve_decode(u8_2d_in cu) {
+    const size_t n = cu.shape(0);
+    if (cu.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    uint8_t *out = new uint8_t[n * 16];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = hex9_curve_decode_many(cu.data(), n, out);
+    }
+    if (rc) { delete[] out; throw std::runtime_error("hex9.curve_decode: malformed curve uuid in batch"); }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
+/* cell_children(uuid[n,16]) -> uint8[n,9,16] — curve-rank order. */
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<3>>
+cell_children(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    uint8_t *out = new uint8_t[n * 9 * 16];
+    int rc = 0;
+    {
+        nb::gil_scoped_release release;
+        for (size_t i = 0; i < n; ++i)
+            rc |= hex9_cell_children(uuid.data() + i * 16, out + i * 9 * 16);
+    }
+    if (rc) { delete[] out; throw std::runtime_error("hex9.cell_children: malformed uuid or cell at lmax"); }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<3>>(out, {n, 9, 16}, owner);
+}
+
+/* Shared body for the two descendant enumerators: one zone row in,
+ * (bins[m,16], curves[m,16]) out. */
+static nb::tuple cells_of(const uint8_t *zone, int layer,
+                          int64_t (*fn)(const uint8_t *, int, uint8_t *,
+                                        uint8_t *, int64_t),
+                          const char *name) {
+    uint8_t cu[16];
+    if (hex9_curve(zone, cu) != 0)
+        throw std::runtime_error(std::string(name) + ": not a valid H9 or curve uuid");
+    const int from = hex9_curve_layer(cu);
+    const int64_t want = hex9_curve_ncells(from, layer);
+    if (want < 0)
+        throw std::runtime_error(std::string(name) + ": bad layer (own layer "
+                                 + std::to_string(from) + ")");
+    uint8_t *bins = new uint8_t[(size_t)want * 16];
+    uint8_t *curves = new uint8_t[(size_t)want * 16];
+    int64_t m;
+    {
+        nb::gil_scoped_release release;
+        m = fn(zone, layer, bins, curves, want);
+    }
+    if (m != want) {
+        delete[] bins; delete[] curves;
+        throw std::runtime_error(std::string(name) + ": enumeration failed");
+    }
+    nb::capsule bo(bins, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    nb::capsule co(curves, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::make_tuple(
+        nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(bins, {(size_t)m, 16}, bo),
+        nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(curves, {(size_t)m, 16}, co));
 }
 
 using u8_1d = nb::ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
@@ -371,6 +454,38 @@ NB_MODULE(hex9_ext, m) {
     m.def("common_ancestor", &common_ancestor, nb::arg("uuids"), nb::arg("layer"),
           "Deepest common address-tree ancestor of (n,16) cells at layer -> "
           "(label, layer, uuid[16]), or None when cells span L0 hexes.");
+    m.def("curve", &curve, nb::arg("uuid"),
+          "Hamiltonian curve address of each (n,16) bin/full uuid -> packed "
+          "curve-uuids (n,16), nibble 0 = 0xC. Byte order at one layer IS "
+          "curve order; a curve-uuid truncates EXACTLY to the lineage "
+          "ancestor's address. Curve-uuid input passes through.");
+    m.def("curve_decode", &curve_decode, nb::arg("uuid"),
+          "Constructive inverse: (n,16) curve-uuids -> canonical bin uuids at "
+          "each curve address's layer. h9-uuid input passes through.");
+    m.def("cell_children", &cell_children, nb::arg("uuid"),
+          "The 9 canonical children of each (n,16) cell -> (n,9,16), in "
+          "CURVE-RANK order (one generation: lineage == ownership).");
+    m.def("curve_cells",
+          [](u8_1d u, int layer) {
+              if (u.shape(0) != 16) throw std::runtime_error("uuid must be (16,)");
+              return cells_of(u.data(), layer, hex9_curve_cells, "hex9.curve_cells");
+          },
+          nb::arg("uuid"), nb::arg("layer"),
+          "Every layer-`layer` LINEAGE descendant of one cell (16,), in curve "
+          "order -> (bins[m,16], curves[m,16]), m = 9^depth. Transitive, "
+          "curve-prefix-exact; 1/6 of descendant area displaced — use "
+          "owned_cells for the geometrically-bounded partition.");
+    m.def("owned_cells",
+          [](u8_1d u, int layer) {
+              if (u.shape(0) != 16) throw std::runtime_error("uuid must be (16,)");
+              return cells_of(u.data(), layer, hex9_owned_cells, "hex9.owned_cells");
+          },
+          nb::arg("uuid"), nb::arg("layer"),
+          "Every layer-`layer` OWNED sub-zone of one cell (16,) — cells whose "
+          "cell_ancestor IS the cell — curve-sorted -> (bins[m,16], "
+          "curves[m,16]), m = exactly 9^depth. Owned sets partition each "
+          "layer (the OGC API-DGGS #108 aggregation relation); bounded "
+          "excursion, not transitive.");
     m.def("adaptive", &adaptive,
           nb::arg("uuids"), nb::arg("min_layer"), nb::arg("max_layer"),
           nb::arg("ceiling"), nb::arg("floor"), nb::arg("weight") = nb::none(),

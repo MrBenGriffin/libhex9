@@ -268,21 +268,121 @@ SELECT h9_adaptive(
     ARRAY[h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(0.5, 0.5), 4326)), 8)],
     NULL, 4, 8, 100.0);
 
--- ── FOSSILS: documented failure modes (docs/addressing-doctrine.md) ───────────
--- These pin KNOWN-BROKEN behaviour of the fossil paths (bins/labels treated
--- as addresses) so it cannot drift silently. They are NOT desired behaviour:
--- if one of these expectations changes, an identity/meta fix has landed —
--- update the doctrine doc and these comments together.
+-- ── Hamiltonian curve addressing (1.5.0) ─────────────────────────────────────
 
--- F1: bare labels are ambiguous at split-hex bodies. Westminster's L1 cell
--- is '43' tail .5, but h9_parse_label('43') silently returns the OTHER '43'
--- (tail .2, central Europe).
+-- Edinburgh L5 KAT (Python-identical): bin 432177... → curve c114253,
+-- index 68736, and the four representations round-trip.
+SELECT h9_curve(h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 5))
+       AS edinburgh_l5_curve;
+
+SELECT h9_curve_index(h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 5))
+       AS edinburgh_l5_index;
+
+SELECT h9_curve_label(h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 5))
+       AS edinburgh_l5_label;
+
+-- decode inverts encode; pack/from_label rebuild the same curve-uuid.
+SELECT h9_curve_decode(h9_curve(b)) = b AS curve_roundtrip,
+       h9_curve_pack(h9_curve_index(b), 5) = h9_curve(b) AS pack_matches,
+       h9_curve_from_label(h9_curve_label(b)) = h9_curve(b) AS label_matches,
+       h9_is_curve(h9_curve(b)) AS is_curve,
+       h9_is_curve(b) AS bin_is_not_curve,
+       h9_curve_layer(h9_curve(b)) AS curve_layer
+FROM (SELECT h9_bin(h9_encode(
+          ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 5) AS b) s;
+
+-- Deep index arithmetic: at L25 the index exceeds bigint; numeric carries it
+-- and pack still inverts exactly.
+SELECT h9_curve_index(b) > 9223372036854775807::numeric AS beyond_bigint,
+       h9_curve_pack(h9_curve_index(b), 25) = h9_curve(b) AS deep_pack_matches
+FROM (SELECT h9_bin(h9_encode(
+          ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 25) AS b) s;
+
+-- Exact prefix coarsening: truncating the L5 curve to L2 equals the curve of
+-- the LINEAGE ancestor (iterated one-generation h9_cell_parent), and the
+-- curve refines: the child index div 9 is the parent index.
+SELECT h9_curve_bin(h9_curve(b5), 2)
+           = h9_curve(h9_cell_parent(h9_cell_parent(h9_cell_parent(b5))))
+           AS truncation_is_lineage,
+       h9_curve_index(h9_curve_bin(h9_curve(b5), 4))
+           = div(h9_curve_index(b5), 9) AS rank_identity
+FROM (SELECT h9_bin(h9_encode(
+          ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 5) AS b5) s;
+
+-- Generator: 81 descendants of Edinburgh's L2 cell at L4, in curve order —
+-- ascending curve-uuids, contiguous index range, all under the ancestor.
+SELECT count(*) AS n,
+       count(*) FILTER (WHERE h9_curve_layer(h9_curve) = 4) AS at_l4,
+       bool_and(h9_curve = h9_curve(h9_bin)) AS curve_matches_bin,
+       max(h9_curve_index(h9_curve)) - min(h9_curve_index(h9_curve)) = 80
+           AS contiguous,
+       (array_agg(h9_curve ORDER BY h9_curve))[1] = (array_agg(h9_curve))[1]
+           AS emitted_in_curve_order
+FROM h9_curve_cells(h9_bin(h9_encode(
+         ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 2), 4);
+
+-- Self-enumeration: layer == own layer yields exactly the cell.
+SELECT c.h9_bin = s.b AS self_bin, h9_curve_layer(c.h9_curve) = 2 AS self_layer
+FROM (SELECT h9_bin(h9_encode(
+          ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 2) AS b) s,
+     h9_curve_cells(s.b, 2) c;
+
+-- Lineage vs ownership. One generation coincides: the 9 children equal
+-- both readings' depth-1 sets, in curve-rank order.
+WITH z AS (SELECT h9_bin(h9_encode(
+               ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 2) AS anc)
+SELECT (SELECT array_agg(c) FROM z, h9_cell_children(z.anc) c)
+           = (SELECT array_agg(h9_bin) FROM z, h9_curve_cells(z.anc, 3))
+           AS children_eq_lineage_gen1,
+       (SELECT array_agg(c) FROM z, h9_cell_children(z.anc) c)
+           = (SELECT array_agg(h9_bin) FROM z, h9_owned_cells(z.anc, 3))
+           AS children_eq_owned_gen1
+FROM z;
+
+-- Ownership at depth 2: exactly 81 owned sub-zones, every one's deep-fold
+-- ancestor is the zone, curve-sorted; and the owned set differs from the
+-- lineage set in MEMBERSHIP-BY-ZONE terms only (both are 9^d partitions).
+WITH z AS (SELECT h9_bin(h9_encode(
+               ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 2) AS anc)
+SELECT count(*) = 81 AS n81,
+       bool_and(h9_cell_ancestor(o.h9_bin, 2) = z.anc) AS all_owned,
+       (array_agg(o.h9_curve ORDER BY o.h9_curve)) = (array_agg(o.h9_curve))
+           AS curve_sorted
+FROM z, h9_owned_cells(z.anc, 4) o
+GROUP BY z.anc;
+
+-- Global partition at L2: the 12 roots' owned sets tile the layer —
+-- 12 * 81 = 972 distinct cells (aggregation is loss-free).
+SELECT count(*) AS total, count(DISTINCT o.h9_bin) AS distinct_bins
+FROM generate_series(0, 11) s(i),
+     LATERAL h9_owned_cells(h9_curve_decode(
+         h9_curve_pack(s.i::numeric, 0)), 2) o;
+
+-- Error contracts.
+SELECT h9_curve_bin(h9_curve(h9_bin(h9_encode(
+    ST_SetSRID(ST_MakePoint(-3.1883, 55.9533), 4326)), 2)), 5);   -- below own layer
+
+SELECT h9_curve_from_label('cc');                                  -- slot 12
+
+SELECT h9_curve_pack(999999999999::numeric, 2);                    -- out of range
+
+-- ── FOSSILS: resolved on the L30 reclaimed layout (docs/addressing-doctrine.md) ─
+-- These probes pinned KNOWN-BROKEN behaviour of the L29-era fossil paths
+-- (bins/labels treated as addresses). On the default L30 reclaimed layout the
+-- deepest address IS the canonical max-depth bin (encode canonicalises; the
+-- address-vs-bin split dissolved), and none of the three reproduce — the pins
+-- now assert their ABSENCE (all false). Ruling 2026-07-18: the L29 frozen
+-- expectations are deprecated; L30 behaviour is the truth these tests pin.
+-- (A legacy HEX9_USE_L29 build still exhibits the fossils — its regression
+-- baseline is test/golden_l29.py, not this suite.)
+
+-- F1 (resolved): bare-label parse of '43' now returns Westminster's own L1
+-- cell rather than the other '43' body (central Europe).
 SELECT h9_parse_label('43')
        <> h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 1)
   AS f1_bare_label_ambiguous;
 
--- F2: identity decode mis-locates meta-bearing bins. Westminster's L1 bin
--- (correct, Python-identical) decodes ~7,100 km away.
+-- F2 (resolved): Westminster's L1 bin decodes in place (was ~7,100 km away).
 SELECT ST_Distance(
            ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)::geography,
            h9_decode(h9_bin(h9_encode(
@@ -290,8 +390,8 @@ SELECT ST_Distance(
        ) > 5000000
   AS f2_bin_decode_mislocated;
 
--- F3: bin→coarser re-binning is unguaranteed at split-hex ancestry; near the
--- (-90, 0) vertex it emits a structurally invalid all-sentinel body.
+-- F3 (resolved): bin→coarser re-binning near the (-90, 0) vertex now agrees
+-- with the direct coarsening (no all-sentinel garbage, no divergence).
 SELECT h9_bin(h9_bin(u, 2), 1) = 'ffffffff-ffff-ffff-ffff-fffffffffff3'::uuid
            AS f3_rebin_garbage,
        h9_bin(h9_bin(u, 2), 1) <> h9_bin(u, 1)

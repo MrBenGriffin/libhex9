@@ -9,8 +9,8 @@
  *
  *	 h9_encode(geometry)			→ uuid		 encode point to self-contained UUID
  *	 h9_decode(uuid)				→ geometry	 POINT(lon lat) SRID 4326
- *	 h9_bin(uuid, integer)		→ uuid		 IMMUTABLE — bin key at layer L (0..29)
- *	 h9_cell(uuid, integer)		 → geometry	 cell polygon SRID 4326 (layer 1..29)
+ *	 h9_bin(uuid, integer)		→ uuid		 IMMUTABLE — bin key at layer L (0..h9_lmax())
+ *	 h9_cell(uuid, integer)		 → geometry	 cell polygon SRID 4326 (layer 1..h9_lmax())
  *	 h9_label(uuid, integer)		→ text		 human label e.g. '478232778'
  *	 h9_label_key(uuid, integer)	→ text		 label with key_tail e.g. '478232778.9'
  *	 h9_grid(geometry, integer)	 → TABLE(hex9 uuid, geom geometry, centroid geometry)
@@ -38,6 +38,7 @@ extern "C" {
 #include "funcapi.h"			/* ReturnSetInfo, SRF_* macros */
 #include "access/htup_details.h"
 #include "utils/array.h"		 /* deconstruct_array (h9_common_ancestor) */
+#include "utils/numeric.h"		 /* numeric_in/out (h9_curve_index/pack) */
 #include "utils/lsyscache.h"	/* get_typlenbyvalalign (h9_encode_many) */
 
 /* PostGIS */
@@ -324,7 +325,7 @@ Datum h9_encode(PG_FUNCTION_ARGS) {
 /* ── h9_encode_many(geometry[]) → uuid[] ────────────────────────────────────
  *
  * Batch encode: one OpenMP-parallel pass (hex9_encode_many) over an array of
- * POINTs, returning the layer-29 UUIDs in input order. Same result as mapping
+ * POINTs, returning the max-depth UUIDs in input order. Same result as mapping
  * h9_encode over the array, but it crosses the SQL/C boundary once and runs the
  * independent point work in parallel — the fast path for encoding a whole
  * column via array_agg(geom). NULL elements yield NULL UUIDs (position
@@ -410,7 +411,7 @@ Datum h9_decode(PG_FUNCTION_ARGS) {
 
 /* ── h9_bin(uuid, integer) → uuid ───────────────────────────────────────── */
 /*																			 */
-/*	 Returns the CANONICAL bin-key UUID at the given layer (0..29) — the		*/
+/*	 Returns the CANONICAL bin-key UUID at the given layer (0..h9_lmax()) — the		*/
 /*	 identity coarsening h9_grid enumerates with, so the cell geometrically	*/
 /*	 contains the point and h9_bin == h9_kdisk(.,0) == h9_grid.h9_bin (JOIN	*/
 /*	 your bins straight to the grid). At a split-hex (6/7/8) leaf it resolves */
@@ -444,7 +445,7 @@ Datum h9_bin(PG_FUNCTION_ARGS) {
 /* ── h9_cell(uuid, layer, densify) → geometry ─────────────────────────────── */
 /*                                                                             */
 /*   Returns the hexagonal cell polygon (SRID 4326) for the H9 UUID at the    */
-/*   given layer (1..29). The third arg `densify` is an optional non-negative  */
+/*   given layer (1..h9_lmax()). The third arg `densify` is an optional non-negative  */
 /*   offset (default 0 via SQL): each of the 6 hex edges is subdivided into    */
 /*   3^densify segments. Output ring size: 6·3^densify + 1 points.             */
 /*                                                                             */
@@ -472,7 +473,7 @@ Datum h9_cell(PG_FUNCTION_ARGS) {
 	if (densify < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("h9_cell: densify must be >= 0, got %d", densify)));
-	if (layer + densify > 29)
+	if (layer + densify > hex9_lmax())
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("h9_cell: layer + densify must be <= %d "
 						       "(layer=%d, densify=%d -> %d)",
@@ -506,7 +507,7 @@ Datum h9_label(PG_FUNCTION_ARGS) {
 	pg_uuid_t *u	 = PG_GETARG_UUID_P(0);
 	int32		layer = PG_GETARG_INT32(1);
 
-	if (layer < 0 || layer > 29)
+	if (layer < 0 || layer > hex9_lmax())
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("h9_label: layer must be 0..%d, got %d", hex9_lmax(), layer)));
 
@@ -532,7 +533,7 @@ Datum h9_label_key(PG_FUNCTION_ARGS) {
 	pg_uuid_t *u	 = PG_GETARG_UUID_P(0);
 	int32		layer = PG_GETARG_INT32(1);
 
-	if (layer < 0 || layer > 29)
+	if (layer < 0 || layer > hex9_lmax())
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("h9_label_key: layer must be 0..%d, got %d", hex9_lmax(), layer)));
 
@@ -622,7 +623,7 @@ Datum h9_grid(PG_FUNCTION_ARGS) {
 		if (densify < 0)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							errmsg("h9_grid: densify must be >= 0, got %d", densify)));
-		if (layer + densify > 29)
+		if (layer + densify > hex9_lmax())
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							errmsg("h9_grid: layer + densify must be <= %d "
 							       "(layer=%d, densify=%d -> %d)",
@@ -823,7 +824,7 @@ Datum h9_neighbors(PG_FUNCTION_ARGS) {
 	return h9_uuid_set_srf(fcinfo, [&](H9UuidSetState *state) -> int64_t {
 		pg_uuid_t *u     = PG_GETARG_UUID_P(0);
 		int32      layer = PG_GETARG_INT32(1);
-		if (layer < 1 || layer > 29)
+		if (layer < 1 || layer > hex9_lmax())
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							errmsg("h9_neighbors: layer must be 1..%d, got %d", hex9_lmax(), layer)));
 		h9_reject_bin_input(u, "h9_neighbors");
@@ -1155,5 +1156,276 @@ Datum h9_adaptive(PG_FUNCTION_ARGS) {
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tup));
 	}
 	SRF_RETURN_DONE(funcctx);
+}
+} /* extern "C" */
+
+/* ── Hamiltonian curve addressing (h9_curve family) ───────────────────────
+ *
+ * The H9 space-filling curve: every layer-L cell visited once, consecutive
+ * indices edge-adjacent, and the order REFINES (a cell's 9 lineage children
+ * occupy indices index*9 .. index*9+8). Two jobs: SORTING (curve order is
+ * locality order — ORDER BY h9_curve(bin), CLUSTER, tile streaming) and
+ * GENERATION (h9_curve_cells enumerates a cell's descendants in locality
+ * order). The packed curve-uuid (nibble 0 = 0xC) is the sortable form:
+ * native uuid btree order at a fixed layer IS curve order, and curve-uuids
+ * coexist with h9-uuids in one column (they sort after all of them). In
+ * mixed-layer collections the 0xF padding makes an ancestor sort AFTER its
+ * descendants (post-order); group by h9_curve_layer when that matters.
+ * Unlike an h9-uuid body a curve-uuid truncates EXACTLY (h9_curve_bin).
+ * See hex9_c.h and core/h9_curve.h for the transducer doctrine. */
+
+extern "C" {
+/* Canonical cell parent / ancestor (mode-0 convention) — the CELL-level
+ * roll-up of a bin, distinct from h9_bin's POINT question. h9_cell_parent
+ * is the curve's generation step: the curve/lineage tree is ITERATED
+ * one-generation parents. h9_cell_ancestor is the direct deep fold — the
+ * two differ on hexagon-band cells beyond one generation. */
+PG_FUNCTION_INFO_V1(h9_cell_parent);
+Datum h9_cell_parent(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	uint8_t out[UUID_LEN];
+	if (hex9_cell_parent(u->data, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_cell_parent: input must be a bin UUID at "
+						       "layer >= 1 (L0 cells have no parent)")));
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+PG_FUNCTION_INFO_V1(h9_cell_ancestor);
+Datum h9_cell_ancestor(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u	 = PG_GETARG_UUID_P(0);
+	int32		layer = PG_GETARG_INT32(1);
+	uint8_t out[UUID_LEN];
+	if (layer < 0 || layer > hex9_lmax())
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_cell_ancestor: layer must be 0..%d, got %d",
+						       hex9_lmax(), layer)));
+	if (hex9_cell_ancestor(u->data, layer, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_cell_ancestor: input must be a bin UUID at "
+						       "a layer >= %d", layer)));
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+PG_FUNCTION_INFO_V1(h9_curve);
+Datum h9_curve(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	uint8_t out[UUID_LEN];
+	if (hex9_curve(u->data, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve: not a valid H9 UUID (a T1 transducer "
+						       "miss means a non-canonical address)")));
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+PG_FUNCTION_INFO_V1(h9_curve_decode);
+Datum h9_curve_decode(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	uint8_t out[UUID_LEN];
+	if (hex9_curve_decode(u->data, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_decode: not a valid curve UUID")));
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+PG_FUNCTION_INFO_V1(h9_is_curve);
+Datum h9_is_curve(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	PG_RETURN_BOOL(hex9_is_curve(u->data) == 1);
+}
+
+PG_FUNCTION_INFO_V1(h9_curve_layer);
+Datum h9_curve_layer(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	const int layer = hex9_curve_layer(u->data);
+	if (layer < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_layer: not a curve UUID (nibble 0 != c)")));
+	PG_RETURN_INT32(layer);
+}
+
+PG_FUNCTION_INFO_V1(h9_curve_bin);
+Datum h9_curve_bin(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u	 = PG_GETARG_UUID_P(0);
+	int32		layer = PG_GETARG_INT32(1);
+	uint8_t out[UUID_LEN];
+	if (layer < 0 || layer > hex9_lmax())
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_bin: layer must be 0..%d, got %d",
+						       hex9_lmax(), layer)));
+	if (hex9_curve_bin(u->data, layer, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_bin: input must be a curve UUID at a "
+						       "layer >= %d", layer)));
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+/* numeric because indices reach 12·9^L − 1: beyond bigint above layer 18. */
+PG_FUNCTION_INFO_V1(h9_curve_index);
+Datum h9_curve_index(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	char buf[64];
+	if (hex9_curve_index(u->data, buf, sizeof buf) < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_index: not a valid H9 or curve UUID")));
+	return DirectFunctionCall3(numeric_in, CStringGetDatum(buf),
+	                           ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+}
+
+PG_FUNCTION_INFO_V1(h9_curve_pack);
+Datum h9_curve_pack(PG_FUNCTION_ARGS) {
+	Datum num	 = PG_GETARG_DATUM(0);
+	int32 layer  = PG_GETARG_INT32(1);
+	if (layer < 0 || layer > hex9_lmax())
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_pack: layer must be 0..%d, got %d",
+						       hex9_lmax(), layer)));
+	char *s = DatumGetCString(DirectFunctionCall1(numeric_out, num));
+	uint8_t out[UUID_LEN];
+	if (hex9_curve_pack(s, layer, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_pack: '%s' is not a valid curve index "
+						       "at layer %d (integer 0..12*9^layer-1)", s, layer)));
+	pfree(s);
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+PG_FUNCTION_INFO_V1(h9_curve_label);
+Datum h9_curve_label(PG_FUNCTION_ARGS) {
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	char buf[64];
+	const int len = hex9_curve_label(u->data, buf, sizeof buf);
+	if (len < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_label: not a valid H9 or curve UUID")));
+	PG_RETURN_TEXT_P(cstring_to_text_with_len(buf, len));
+}
+
+PG_FUNCTION_INFO_V1(h9_curve_from_label);
+Datum h9_curve_from_label(PG_FUNCTION_ARGS) {
+	text *t = PG_GETARG_TEXT_PP(0);
+	char *label = text_to_cstring(t);
+	uint8_t out[UUID_LEN];
+	if (hex9_curve_parse_label(label, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_curve_from_label: '%s' is not a curve label "
+						       "('c' + slot hex char + base-9 rank chars)", label)));
+	pfree(label);
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+} /* extern "C" */
+
+/* ── Descendant enumeration SRFs ──────────────────────────────────────────
+ *
+ * h9_curve_cells — every layer-L LINEAGE descendant (the curve tree), in
+ * curve order. h9_owned_cells — every layer-L OWNED sub-zone (cells whose
+ * h9_cell_ancestor IS the zone; exactly 9^d, the sets partition the
+ * layer — the aggregation relation of OGC API-DGGS issue #108),
+ * curve-sorted. Both return (h9_bin, h9_curve) rows — the h9 bin is the
+ * primary key form (selection over format: curve->h9 is the expensive
+ * direction, h9->curve the cheap one); input is an h9 bin/full uuid or a
+ * curve-uuid. Capped by the hex9.grid_max_cells GUC like h9_grid. */
+
+struct H9CurveCellsState {
+	int64_t  count;
+	int64_t  idx;
+	uint8_t *bins;               /* count * 16 */
+	uint8_t *curves;             /* count * 16 */
+};
+
+typedef int64_t (*h9_enum_fn)(const uint8_t uuid[16], int layer,
+                              uint8_t *out_bins, uint8_t *out_curves,
+                              int64_t max_cells);
+
+static Datum h9_cells_srf(FunctionCallInfo fcinfo, const char *fname,
+                          h9_enum_fn fn) {
+	FuncCallContext *funcctx;
+
+	if (SRF_IS_FIRSTCALL()) {
+		funcctx = SRF_FIRSTCALL_INIT();
+		MemoryContext oldctx = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+		pg_uuid_t *u	 = PG_GETARG_UUID_P(0);
+		int32		layer = PG_GETARG_INT32(1);
+		if (layer < 0 || layer > hex9_lmax())
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							errmsg("%s: layer must be 0..%d, got %d",
+							       fname, hex9_lmax(), layer)));
+
+		H9CurveCellsState *state = (H9CurveCellsState *) palloc(sizeof *state);
+		state->idx = 0;
+
+		/* Size from the cell's own layer; the ABI re-derives and caps. */
+		uint8_t curve[UUID_LEN];
+		if (hex9_curve(u->data, curve) != 0)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							errmsg("%s: not a valid H9 or curve UUID", fname)));
+		const int from = hex9_curve_layer(curve);
+		const int64_t want = hex9_curve_ncells(from, layer);
+		if (want < 0)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							errmsg("%s: layer %d is above the cell's "
+							       "own layer %d", fname, layer, from)));
+		if (want > (int64_t)h9_grid_max_cells)
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							errmsg("%s: %lld cells at layer %d exceeds "
+							       "limit %d; use a shallower layer or raise "
+							       "hex9.grid_max_cells",
+							       fname, (long long)want, layer, h9_grid_max_cells)));
+
+		state->bins   = (uint8_t *) palloc((Size)want * 16);
+		state->curves = (uint8_t *) palloc((Size)want * 16);
+		state->count  = fn(u->data, layer, state->bins, state->curves, want);
+		if (state->count < 0)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							errmsg("%s: enumeration failed at layer %d",
+							       fname, layer)));
+		funcctx->user_fctx = state;
+
+		get_call_result_type(fcinfo, NULL, &funcctx->tuple_desc);
+		BlessTupleDesc(funcctx->tuple_desc);
+		MemoryContextSwitchTo(oldctx);
+	}
+
+	funcctx = SRF_PERCALL_SETUP();
+	H9CurveCellsState *state = (H9CurveCellsState *) funcctx->user_fctx;
+
+	if (state->idx < state->count) {
+		const int64_t i = state->idx++;
+		Datum values[2];
+		bool  isnull[2] = {false, false};
+		values[0] = UUIDPGetDatum(make_pg_uuid(state->bins + i * 16));
+		values[1] = UUIDPGetDatum(make_pg_uuid(state->curves + i * 16));
+		HeapTuple tup = heap_form_tuple(funcctx->tuple_desc, values, isnull);
+		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tup));
+	}
+	SRF_RETURN_DONE(funcctx);
+}
+
+extern "C" {
+PG_FUNCTION_INFO_V1(h9_curve_cells);
+Datum h9_curve_cells(PG_FUNCTION_ARGS) {
+	return h9_cells_srf(fcinfo, "h9_curve_cells", hex9_curve_cells);
+}
+
+PG_FUNCTION_INFO_V1(h9_owned_cells);
+Datum h9_owned_cells(PG_FUNCTION_ARGS) {
+	return h9_cells_srf(fcinfo, "h9_owned_cells", hex9_owned_cells);
+}
+
+/* h9_cell_children(uuid) → SETOF uuid — the 9 canonical children in
+ * curve-rank order (one generation: lineage == ownership). */
+PG_FUNCTION_INFO_V1(h9_cell_children);
+Datum h9_cell_children(PG_FUNCTION_ARGS) {
+	return h9_uuid_set_srf(fcinfo, [&](H9UuidSetState *state) -> int64_t {
+		pg_uuid_t *u = PG_GETARG_UUID_P(0);
+		state->uuids = (uint8_t *) palloc(9 * 16);
+		if (hex9_cell_children(u->data, state->uuids) != 0)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							errmsg("h9_cell_children: not a valid H9 UUID, or "
+							       "the cell is at the deepest layer %d",
+							       hex9_lmax())));
+		return 9;
+	});
 }
 } /* extern "C" */

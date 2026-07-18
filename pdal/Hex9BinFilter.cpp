@@ -60,6 +60,15 @@ void Hex9BinFilter::addDimensions(PointLayoutPtr layout)
     m_dValue = layout->registerOrAssignDim("H9Value", Dimension::Type::Double);
     m_dBinHi = layout->registerOrAssignDim("H9BinHi", Dimension::Type::Unsigned64);
     m_dBinLo = layout->registerOrAssignDim("H9BinLo", Dimension::Type::Unsigned64);
+    // Hamiltonian curve address of the cell (big-endian split of the packed
+    // curve-uuid): sorting by (H9CurveHi, H9CurveLo) orders cells along the
+    // H9 space-filling curve — locality order for streaming/tiling, e.g.
+    //   filters.sort(dimension=H9CurveHi), then H9CurveLo, within one layer.
+    // Mixed-layer digests: the curve-uuid's f-padding makes a coarser cell
+    // sort AFTER the finer cells it covers (post-order); partition by
+    // H9Layer when strict per-layer curve order matters.
+    m_dCurveHi = layout->registerOrAssignDim("H9CurveHi", Dimension::Type::Unsigned64);
+    m_dCurveLo = layout->registerOrAssignDim("H9CurveLo", Dimension::Type::Unsigned64);
 
     // parse "Dim:func,Dim:func,..."
     std::stringstream ss(m_aggSpec);
@@ -172,6 +181,15 @@ PointViewSet Hex9BinFilter::run(PointViewPtr view)
         for (int k = 8; k < 16; ++k) lo = (lo << 8) | binu[k];
         ov->setField(m_dBinHi, id, hi);
         ov->setField(m_dBinLo, id, lo);
+
+        uint8_t curveu[16];                   // curve address of the cell
+        if (hex9_curve(binu, curveu) != 0)
+            throwError("filters.hex9bin: curve encode failed for a digest cell");
+        uint64_t chi = 0, clo = 0;
+        for (int k = 0; k < 8; ++k) chi = (chi << 8) | curveu[k];
+        for (int k = 8; k < 16; ++k) clo = (clo << 8) | curveu[k];
+        ov->setField(m_dCurveHi, id, chi);
+        ov->setField(m_dCurveLo, id, clo);
 
         for (size_t s = 0; s < m_specs.size(); ++s) {
             const Acc& ac = acc[s][c];
