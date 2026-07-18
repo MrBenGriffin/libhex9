@@ -1,9 +1,9 @@
 # Installing libhex9
 
 libhex9 is a geometry-free DGGS core with a stable C ABI (`hex9_c.h`). It is
-consumed four ways — pick the section that matches your purpose. The C library
-is the foundation; the PostGIS extension and (optionally) the Python module
-build *on top of* it.
+consumed five ways — pick the section that matches your purpose. The C library
+is the foundation; the PostGIS extension, the PDAL plugins, and (optionally)
+the Python module build *on top of* it.
 
 > **Addressing layout.** All builds default to the **L30** layout (a full UUID
 > is a max-depth bin). The legacy 29-layer format is opt-in with
@@ -123,7 +123,61 @@ Disable with `-DHEX9_PYTHON=OFF`. Smoke test: `ctest --test-dir build -R smoke_p
 
 ---
 
-## 4. The Rust crate (`geoplegma/`, static FFI)
+## 4. The PDAL plugins (`filters.hex9`, `filters.hex9bin`)
+
+Two PDAL filter plugins built by the same CMake build, **opt-in** with
+`-DHEX9_PDAL=ON` (requires PDAL — dev headers and the `pdal` CLI):
+
+- **`filters.hex9`** — per-point `WGS84 lon/lat → w_oct` (the 3D storage CRS).
+- **`filters.hex9bin`** — aggregate points into Hex9 cells (population-ceiling
+  adaptive digest) with `mean/min/max/mode` rollups.
+
+```sh
+cmake -S . -B build -DHEX9_PDAL=ON
+cmake --build build -j
+```
+
+PDAL discovers a plugin by filename (`libpdal_plugin_filter_<name>.{so,dylib}`,
+`pdal_plugin_filter_<name>.dll` on Windows — CMake gets the naming right) in
+one of two places:
+
+1. **A directory on `PDAL_DRIVER_PATH`** — simplest for development, no
+   install needed:
+
+   ```sh
+   export PDAL_DRIVER_PATH=$PWD/build/pdal
+   ```
+
+2. **PDAL's own plugin dir** — zero-config discovery. Install the plugins
+   there:
+
+   ```sh
+   cmake -S . -B build -DHEX9_PDAL=ON \
+         -DHEX9_PDAL_INSTALL_DIR=$(pdal-config --prefix)/lib
+   cmake --build build -j
+   cmake --install build            # installs the plugins + libhex9
+   ```
+
+   The plugins link `libhex9`; `cmake --install` installs it too and sets the
+   plugins' rpath so they resolve it. (If you install `libhex9` to a
+   non-standard prefix, that dir must be on the runtime library path.)
+
+Verify either way:
+
+```sh
+pdal --drivers | grep hex9          # -> filters.hex9, filters.hex9bin
+pdal --options filters.hex9bin
+```
+
+When the `pdal` CLI is present, the build adds guarded ctests (`pdal_filter`,
+`pdal_hex9bin`) that run real pipelines through the plugins and verify against
+the C ABI: `ctest --test-dir build -R pdal`.
+
+See `pdal/examples/README.md` for an end-to-end LiDAR → Hex9 → maps walkthrough.
+
+---
+
+## 5. The Rust crate (`geoplegma/`, static FFI)
 
 The `hex9-sys` crate at `geoplegma/` builds `libhex9` **itself** (via the
 `cmake` crate, `hex9Static` target) and generates FFI bindings from `hex9_c.h` —
