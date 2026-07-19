@@ -91,6 +91,7 @@ Then, in the database:
 ```sql
 CREATE EXTENSION postgis;          -- required first
 CREATE EXTENSION postgis_hex9;
+ALTER EXTENSION postgis_hex9 UPDATE TO '1.5.0'; -- latest version
 ```
 
 - `HEX9_PREFIX` must match the prefix you installed `libhex9` to (default

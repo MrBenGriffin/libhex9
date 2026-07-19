@@ -17,6 +17,10 @@
 #define H9_STR2(x) #x
 #define H9_STR(x)  H9_STR2(x)
 
+#ifndef H9_WARP_SPH_BLOB
+#error "H9_WARP_SPH_BLOB (absolute path to the v4 fund .h9warp binary) must be defined by the build"
+#endif
+
 __asm__(
 #if defined(__APPLE__)
     ".const_data\n"
@@ -26,6 +30,12 @@ __asm__(
     ".incbin " H9_STR(H9_WARP_BLOB) "\n"
     ".globl _h9_warp_blob_end\n"
     "_h9_warp_blob_end:\n"
+    ".globl _h9_warp_sph_blob\n"
+    ".p2align 4\n"
+    "_h9_warp_sph_blob:\n"
+    ".incbin " H9_STR(H9_WARP_SPH_BLOB) "\n"
+    ".globl _h9_warp_sph_blob_end\n"
+    "_h9_warp_sph_blob_end:\n"
 #else
     ".section .rodata\n"
     ".globl h9_warp_blob\n"
@@ -34,14 +44,25 @@ __asm__(
     ".incbin " H9_STR(H9_WARP_BLOB) "\n"
     ".globl h9_warp_blob_end\n"
     "h9_warp_blob_end:\n"
+    ".globl h9_warp_sph_blob\n"
+    ".balign 16\n"
+    "h9_warp_sph_blob:\n"
+    ".incbin " H9_STR(H9_WARP_SPH_BLOB) "\n"
+    ".globl h9_warp_sph_blob_end\n"
+    "h9_warp_sph_blob_end:\n"
 #endif
 );
 
 extern "C" const unsigned char h9_warp_blob[];
 extern "C" const unsigned char h9_warp_blob_end[];
+extern "C" const unsigned char h9_warp_sph_blob[];
+extern "C" const unsigned char h9_warp_sph_blob_end[];
 
 namespace h9 {
 const unsigned char *const EMBEDDED_WARP_DATA = h9_warp_blob;
 const std::size_t          EMBEDDED_WARP_SIZE =
     static_cast<std::size_t>(h9_warp_blob_end - h9_warp_blob);
+const unsigned char *const EMBEDDED_WARP_SPH_DATA = h9_warp_sph_blob;
+const std::size_t          EMBEDDED_WARP_SPH_SIZE =
+    static_cast<std::size_t>(h9_warp_sph_blob_end - h9_warp_sph_blob);
 }

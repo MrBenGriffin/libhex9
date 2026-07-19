@@ -32,6 +32,12 @@ namespace h9 {
 extern WarpState g_warp_state;
 extern bool      g_warp_state_ready;
 
+/* Via-sphere counterpart: the Sphere-L6 wedge-fold field (v4 fund blob),
+ * selected by the shims when the via-sphere mode is on. Built lazily by
+ * hex9_set_via_sphere / h9_warp_init_embedded_sph. */
+extern WarpState g_warp_state_sph;
+extern bool      g_warp_state_sph_ready;
+
 /* Runtime apply toggle. true (default) ⇒ h9_warp_fwd/inv apply the
  * authalic correction when state is ready; false ⇒ identity. Exposed
  * in PostGIS as the `hex9.use_warp` GUC; CLI / standalone builds get
@@ -47,6 +53,10 @@ extern bool      g_warp_use;
 bool h9_warp_init_embedded(std::string* err = nullptr,
                            int    grad_maxiter = 2000,
                            double grad_tol     = 1e-12);
+
+/* Build g_warp_state_sph from the embedded Sphere-L6 fund blob.
+ * Idempotent; ~1 s (no gradient estimation — the blob ships them). */
+bool h9_warp_init_embedded_sph(std::string* err = nullptr);
 
 /* Optional alternate init from a runtime sidecar file (e.g. for tests
  * or operator-supplied warpfiles). */
@@ -79,11 +89,34 @@ WarpEdgeMode h9_warp_edge_mode();
  * forgot to call h9_warp_init_embedded), or (b) the operator has
  * disabled warp at runtime via `SET hex9.use_warp = off`. */
 #if H9_WARP_ENABLE
+/* Via-sphere: when included via h9_math.h (which defines the per-TU mode
+ * flag) the shims route to the Sphere-L6 wedge-fold state; standalone
+ * includers (h9_warp_runtime.cpp) compile the classic-only fallback. */
+#ifdef H9_VIA_SPHERE_FLAG
+static inline const h9::WarpState* h9_warp_pick(bool* ready)
+{
+    if (h9_g_via_sphere) {
+        *ready = h9::g_warp_state_sph_ready;
+        return &h9::g_warp_state_sph;
+    }
+    *ready = h9::g_warp_state_ready;
+    return &h9::g_warp_state;
+}
+#else
+static inline const h9::WarpState* h9_warp_pick(bool* ready)
+{
+    *ready = h9::g_warp_state_ready;
+    return &h9::g_warp_state;
+}
+#endif
+
 static inline void h9_warp_fwd(double rx, double ry, int oct_mode,
                                double *wx, double *wy)
 {
-    if (!h9::g_warp_use || !h9::g_warp_state_ready) { *wx = rx; *wy = ry; return; }
-    h9::warp_do(h9::g_warp_state, rx, ry, oct_mode, wx, wy);
+    bool ready;
+    const h9::WarpState* ws = h9_warp_pick(&ready);
+    if (!h9::g_warp_use || !ready) { *wx = rx; *wy = ry; return; }
+    h9::warp_do(*ws, rx, ry, oct_mode, wx, wy);
 }
 
 /* Hint overload retained for API compatibility — hints are unused now
@@ -98,8 +131,10 @@ static inline void h9_warp_fwd(double rx, double ry, int oct_mode,
 static inline void h9_warp_inv(double wx, double wy, int oct_mode,
                                double *rx, double *ry)
 {
-    if (!h9::g_warp_use || !h9::g_warp_state_ready) { *rx = wx; *ry = wy; return; }
-    h9::warp_undo(h9::g_warp_state, wx, wy, oct_mode, rx, ry);
+    bool ready;
+    const h9::WarpState* ws = h9_warp_pick(&ready);
+    if (!h9::g_warp_use || !ready) { *rx = wx; *ry = wy; return; }
+    h9::warp_undo(*ws, wx, wy, oct_mode, rx, ry);
 }
 #endif /* H9_WARP_ENABLE */
 

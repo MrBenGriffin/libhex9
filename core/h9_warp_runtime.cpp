@@ -15,6 +15,9 @@ WarpState g_warp_state;
 bool      g_warp_state_ready = false;
 bool      g_warp_use         = true;  /* default ON; PostGIS GUC may override */
 
+WarpState g_warp_state_sph;
+bool      g_warp_state_sph_ready = false;
+
 void h9_warp_set_edge_mode(WarpEdgeMode m)
 {
     g_warp_state.edge_feather = (m == WarpEdgeMode::Feather);
@@ -73,6 +76,29 @@ bool h9_warp_init_embedded(std::string* err,
     }
     if (!apply_edge_mode_env(err)) return false;
     g_warp_state_ready = true;
+    return true;
+}
+
+bool h9_warp_init_embedded_sph(std::string* err)
+{
+    if (g_warp_state_sph_ready) return true;
+    H9WarpData data;
+    if (!load_h9warp(EMBEDDED_WARP_SPH_DATA, EMBEDDED_WARP_SPH_SIZE,
+                     data, err))
+        return false;
+    if (!data.fund || !data.has_gradients()) {
+        if (err) *err = "h9warp sph: embedded blob is not a v4 fund field";
+        return false;
+    }
+    g_warp_state_sph.data = std::move(data);
+    if (!finish_warp_state(g_warp_state_sph)) {
+        if (err) *err = "h9warp sph: fund mesh build failed";
+        return false;
+    }
+    /* The wedge-fold field is edge-tangent by construction: always raw. */
+    g_warp_state_sph.edge_feather = false;
+    g_warp_state_sph.edge_bypass  = false;
+    g_warp_state_sph_ready = true;
     return true;
 }
 

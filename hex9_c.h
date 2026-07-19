@@ -55,6 +55,16 @@ int         hex9_warp_init(char *errbuf, size_t errlen);
 void        hex9_set_use_warp(int on);                /* hex9.use_warp: 0/1 */
 void        hex9_set_encoder(int mode);               /* hex9.encoder: 0=nn, 1=containment */
 
+/* Via-sphere chain (mirrors hhg9 Registrar(via_sphere=True)): geodetic
+ * latitude → authalic latitude (Karney series), true-sphere core, and the
+ * Sphere-L6 wedge-fold warp instead of the WGS84-trained field. Enabling
+ * lazily builds the sphere warp state from the embedded v4 fund blob
+ * (~1 s, idempotent). Returns 0 on success; on failure writes errbuf and
+ * leaves the mode unchanged. Disabling (on=0) always succeeds. NOT
+ * thread-safe against in-flight batch calls — set it between batches,
+ * like hex9_set_use_warp. */
+int         hex9_set_via_sphere(int on, char *errbuf, size_t errlen);
+
 /* ── Point addressing ──────────────────────────────────────────────────────*/
 
 /* Encode (lon, lat) to its layer-29 cell UUID. Returns 0 on success. */

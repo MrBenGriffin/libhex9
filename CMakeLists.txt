@@ -39,6 +39,19 @@ if(NOT EXISTS "${H9_WARP_BLOB_PATH}")
     "Inputs come from the hhg9/hex9 python repo (WGS84_l5_warp_data.npz).")
 endif()
 
+# Via-sphere: the Sphere-L6 fundamental-domain (v4 wedge-fold) sidecar,
+# consumed by hex9_set_via_sphere(). Regenerate with
+#     python tools/support/export_warp_fund_v4.py
+# from a python env with hhg9 importable (input: Sphere_l6_fund_warp_data.npz).
+set(H9_WARP_SPH_BLOB_PATH
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/Sphere_l6_fund.f64g.h9warp")
+if(NOT EXISTS "${H9_WARP_SPH_BLOB_PATH}")
+  message(FATAL_ERROR
+    "libhex9: embedded via-sphere warp blob not found:\n"
+    "    ${H9_WARP_SPH_BLOB_PATH}\n"
+    "Regenerate: python tools/support/export_warp_fund_v4.py")
+endif()
+
 # ── libhex9 shared library ──────────────────────────────────────────────────
 add_library(hex9 SHARED
   hex9_c.cpp
@@ -51,7 +64,8 @@ target_include_directories(hex9
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)      # the C++ core
 target_compile_definitions(hex9 PRIVATE
   H9_WARP_ENABLE=1
-  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}")
+  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}"
+  H9_WARP_SPH_BLOB="${H9_WARP_SPH_BLOB_PATH}")
 set_target_properties(hex9 PROPERTIES
   VERSION 0.1.0 SOVERSION 0
   OUTPUT_NAME hex9
@@ -84,7 +98,8 @@ target_include_directories(hex9Static
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)
 target_compile_definitions(hex9Static PRIVATE
   H9_WARP_ENABLE=1
-  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}")
+  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}"
+  H9_WARP_SPH_BLOB="${H9_WARP_SPH_BLOB_PATH}")
 set_target_properties(hex9Static PROPERTIES OUTPUT_NAME hex9 POSITION_INDEPENDENT_CODE ON)
 
 # ── install (cross-platform) ────────────────────────────────────────────────
@@ -144,6 +159,27 @@ add_test(NAME bin_prefix_guard COMMAND bin_prefix_guard)
 add_executable(curve test/curve.c)
 target_link_libraries(curve PRIVATE hex9)
 add_test(NAME curve COMMAND curve)
+
+# Authalic latitude series (via-sphere front-end) vs the hhg9 oracle.
+# Header-only — needs no hex9 link beyond libm.
+add_executable(authalic test/authalic.c)
+target_link_libraries(authalic PRIVATE m)
+add_test(NAME authalic COMMAND authalic)
+
+# v4 wedge-fold warp vs the hhg9 fold build (frozen Python reference).
+# Header-only internals; reads the fund blob + parity reference from the
+# source tree.
+add_executable(fund_warp test/fund_warp.cpp)
+target_compile_definitions(fund_warp PRIVATE
+  H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME fund_warp COMMAND fund_warp)
+
+# End-to-end via-sphere chain vs the hhg9 Python reference (public ABI).
+add_executable(via_sphere test/via_sphere.c)
+target_link_libraries(via_sphere PRIVATE hex9)
+target_compile_definitions(via_sphere PRIVATE
+  H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME via_sphere COMMAND via_sphere)
 
 add_executable(full_id test/full_id.c)
 target_link_libraries(full_id PRIVATE hex9)

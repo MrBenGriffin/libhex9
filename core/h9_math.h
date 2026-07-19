@@ -66,6 +66,30 @@ static const double H9_WGS84_B2 = H9_WGS84_B * H9_WGS84_B;
 static const double H9_WGS84_E2 = (2.0 * H9_WGS84_F) - (H9_WGS84_F * H9_WGS84_F);
 static const double H9_NORM_B2  = (H9_WGS84_B / H9_WGS84_A) * (H9_WGS84_B / H9_WGS84_A);
 
+/* ── via-sphere runtime mode ─────────────────────────────────────────────────
+ * Mirrors hhg9's Registrar(via_sphere=True) chain: geodetic latitude is
+ * reduced to the AUTHALIC latitude (h9_authalic.h, Karney series), the core
+ * then runs on the UNIT SPHERE (nb2 = 1, e2 = 0, A = 1 — exact ECEF both
+ * ways), and the warp shims read the Sphere-L6 wedge-fold field instead of
+ * the WGS84-trained one. One trained field serves every ellipsoid; the
+ * ellipsoid-specific part of the chain is the latitude series and nothing
+ * else. Toggle via hex9_set_via_sphere(); per-TU state like the geometry
+ * statics around it. Metric tolerances (vertex snap, Gauss-Newton floors)
+ * are metres² on WGS84 — divide by A² on the unit sphere. */
+#include "h9_authalic.h"
+#define H9_VIA_SPHERE_FLAG 1     /* marker for h9_warp_runtime.h's shims */
+static int        h9_g_via_sphere = 0;
+static H9Authalic h9_g_authalic;
+static const double H9_VIA_INV_A2 = 1.0 / (6378137.0 * 6378137.0);
+
+static int h9_via_sphere_set(int on) {
+	if (on && !(h9_g_authalic.valid || h9_g_authalic.sphere)) {
+		if (!h9_authalic_init(&h9_g_authalic, H9_WGS84_E2)) return 0;
+	}
+	h9_g_via_sphere = (on != 0);
+	return 1;
+}
+
 /* ── H9_Constants ────────────────────────────────────────────────────────── */
 static const double H9_R3 = sqrt(3.0);
 static const double H9_W  = sqrt(2.0);
@@ -218,35 +242,37 @@ static void h9_ak_core(double u, double v, double w,
     *z = tw * pow(u2 + v2 + a * u2 * v2, 0.25);
 }
 
-/* Normalise raw XYZ to unit-scale ellipsoid (a=1, b=B/A). */
+/* Normalise raw XYZ to unit-scale ellipsoid (a=1, b=B/A); via-sphere: b=a. */
 static void h9_ak_normalise(double *x, double *y, double *z) {
-    const double n = sqrt(*x * *x + *y * *y + (*z * *z) / H9_NORM_B2);
+    const double nb2 = h9_g_via_sphere ? 1.0 : H9_NORM_B2;
+    const double n = sqrt(*x * *x + *y * *y + (*z * *z) / nb2);
     *x /= n; *y /= n; *z /= n;
 }
 
 /* ── Coordinate conversions ─────────────────────────────────────────────── */
 
-/* Signed normalised barycentric → ECEF (WGS84, metres). */
+/* Signed normalised barycentric → ECEF (WGS84 metres; via-sphere: unit). */
 static void h9_c_oct_to_c_ell(double u, double v, double w,
                                double *X, double *Y, double *Z) {
+    const double A  = h9_g_via_sphere ? 1.0 : H9_WGS84_A;
     const double su = (u >= 0.0) ? 1.0 : -1.0;
     const double sv = (v >= 0.0) ? 1.0 : -1.0;
     const double sw = (w >= 0.0) ? 1.0 : -1.0;
     const double au = fabs(u), av = fabs(v), aw = fabs(w);
     if (av < H9_VERT_EPS && aw < H9_VERT_EPS) {
-        *X = H9_WGS84_A * su; *Y = 0.0; *Z = 0.0; return;
+        *X = A * su; *Y = 0.0; *Z = 0.0; return;
     }
     if (au < H9_VERT_EPS && aw < H9_VERT_EPS) {
-        *X = 0.0; *Y = H9_WGS84_A * sv; *Z = 0.0; return;
+        *X = 0.0; *Y = A * sv; *Z = 0.0; return;
     }
     if (au < H9_VERT_EPS && av < H9_VERT_EPS) {
-        *X = 0.0; *Y = 0.0; *Z = H9_WGS84_A * sw; return;
+        *X = 0.0; *Y = 0.0; *Z = A * sw; return;
     }
     h9_ak_core(au, av, aw, X, Y, Z);
     h9_ak_normalise(X, Y, Z);
-    *X *= H9_WGS84_A * su;
-    *Y *= H9_WGS84_A * sv;
-    *Z *= H9_WGS84_A * sw;
+    *X *= A * su;
+    *Y *= A * sv;
+    *Z *= A * sw;
 }
 
 /* ECEF → geodetic lon/lat (radians). Standard surface-Bowring (5 iters).
@@ -254,9 +280,15 @@ static void h9_c_oct_to_c_ell(double u, double v, double w,
  * fixed point at h=0 surface points, which is what every caller passes. */
 static void h9_c_ell_to_lonlat(double X, double Y, double Z,
                                 double *lon, double *lat) {
-    const double e2  = 1.0 - H9_WGS84_B2 / H9_WGS84_A2;
     const double p   = sqrt(X*X + Y*Y);
     *lon = atan2(Y, X);
+    if (h9_g_via_sphere) {
+        /* Sphere: geocentric == geodetic, exact (hhg9 authalic_sphere:
+         * ξ = atan2(z, hypot(x, y)) — arcsin would quantise colatitude). */
+        *lat = atan2(Z, p);
+        return;
+    }
+    const double e2  = 1.0 - H9_WGS84_B2 / H9_WGS84_A2;
     *lat = atan2(Z, p * (1.0 - e2));
     for (int k = 0; k < 5; ++k) {
         const double sin_lat = sin(*lat);
@@ -383,6 +415,12 @@ static void h9_braw_from_boct(H9BOct b, double *fx, double *fy) {
 static void h9_rad_lonlat_to_ecef(double lon_rad, double lat_rad, double *x, double *y, double *z) {
 	const double sin_lat = sin(lat_rad);
 	const double cos_lat = cos(lat_rad);
+	if (h9_g_via_sphere) {                 /* unit sphere, exact */
+		*x = cos_lat * cos(lon_rad);
+		*y = cos_lat * sin(lon_rad);
+		*z = sin_lat;
+		return;
+	}
 	const double n = H9_WGS84_A / sqrt(1.0 - H9_WGS84_E2 * (sin_lat * sin_lat));
 	*x = n * cos_lat * cos(lon_rad);
 	*y = n * cos_lat * sin(lon_rad);
@@ -390,9 +428,10 @@ static void h9_rad_lonlat_to_ecef(double lon_rad, double lat_rad, double *x, dou
 }
 
 static void h9_ecef_to_rad_lonlat(double x, double y, double z, double *lon_rad, double *lat_rad) {
+	const double nb2 = h9_g_via_sphere ? 1.0 : H9_NORM_B2;
 	const double p = sqrt(x * x + y * y);
 	*lon_rad = atan2(y, x);
-	*lat_rad = atan2(z, p * H9_NORM_B2);
+	*lat_rad = atan2(z, p * nb2);
 }
 
 
@@ -427,20 +466,23 @@ static H9BOct h9_lonlat_to_boct_beam(double lon_rad, double lat_rad) {
 
     /* Axis-vertex shortcut: snap to the exact vertex when the TANGENTIAL
      * (off-axis) distance² is within H9_BOCT_VERTEX_TAN2 — linear capture, see
-     * the macro note. (Was |e_axis|−A < 1e-9: quadratic, ~0.11 m capture.) */
-	if (eX*eX + eY*eY < H9_BOCT_VERTEX_TAN2) {          /* pole (Z axis) */
+     * the macro note. (Was |e_axis|−A < 1e-9: quadratic, ~0.11 m capture.)
+     * The constant is metres² on WGS84 — rescale on the unit sphere. */
+	const double vtan2b = h9_g_via_sphere ? H9_BOCT_VERTEX_TAN2 * H9_VIA_INV_A2
+	                                      : H9_BOCT_VERTEX_TAN2;
+	if (eX*eX + eY*eY < vtan2b) {          /* pole (Z axis) */
 		result.w = eZ > 0 ? 1.0 : -1.0;
 		result.u = 0.0; result.v = 0.0;
 		return result;
 	}
 
-	if (eY*eY + eZ*eZ < H9_BOCT_VERTEX_TAN2) {          /* X axis */
+	if (eY*eY + eZ*eZ < vtan2b) {          /* X axis */
 		result.u = eX > 0 ? 1.0 : -1.0;
 		result.v = 0.0; result.w = 0.0;
 		return result;
 	}
 
-	if (eX*eX + eZ*eZ < H9_BOCT_VERTEX_TAN2) {          /* Y axis */
+	if (eX*eX + eZ*eZ < vtan2b) {          /* Y axis */
 		result.v = eY > 0 ? 1.0 : -1.0;
 		result.u = 0.0; result.w = 0.0;
 		return result;
@@ -650,10 +692,10 @@ static inline void h9_aj_ak_fwd_jac(double u, double v, double w,
     dPdc[2][1] = tw*qz*(2.0*tv*pv*(1.0 + a*u2));
     dPdc[2][2] = pw*Pz;
 
-    const double NB2 = H9_NORM_B2;
+    const double NB2 = h9_g_via_sphere ? 1.0 : H9_NORM_B2;
     const double n2  = xr*xr + yr*yr + zr*zr/NB2;
     const double n   = sqrt(n2);
-    const double A   = H9_WGS84_A;
+    const double A   = h9_g_via_sphere ? 1.0 : H9_WGS84_A;
     P[0] = A*su*xr/n; P[1] = A*sv*yr/n; P[2] = A*sw*zr/n;
     for (int j = 0; j < 3; ++j) {
         const double dxr = dPdc[0][j], dyr = dPdc[1][j], dzr = dPdc[2][j];
@@ -700,10 +742,13 @@ static H9BOct h9_lonlat_to_boct(double lon_rad, double lat_rad) {
     const double sw = (result.oct_i & 4) ? -1.0 : 1.0;
 
     /* pole / axis shortcuts — tangential-distance² capture, identical to the
-     * beam (see H9_BOCT_VERTEX_TAN2 note; was the quadratic |e|−A < 1e-9). */
-    if (eX*eX + eY*eY < H9_BOCT_VERTEX_TAN2) { result.w = sw; result.u = 0; result.v = 0; return result; }  /* pole */
-    if (eY*eY + eZ*eZ < H9_BOCT_VERTEX_TAN2) { result.u = su; result.v = 0; result.w = 0; return result; }  /* X */
-    if (eX*eX + eZ*eZ < H9_BOCT_VERTEX_TAN2) { result.v = sv; result.u = 0; result.w = 0; return result; }  /* Y */
+     * beam (see H9_BOCT_VERTEX_TAN2 note; was the quadratic |e|−A < 1e-9).
+     * The constant is metres² on WGS84 — rescale on the unit sphere. */
+    const double vtan2 = h9_g_via_sphere ? H9_BOCT_VERTEX_TAN2 * H9_VIA_INV_A2
+                                         : H9_BOCT_VERTEX_TAN2;
+    if (eX*eX + eY*eY < vtan2) { result.w = sw; result.u = 0; result.v = 0; return result; }  /* pole */
+    if (eY*eY + eZ*eZ < vtan2) { result.u = su; result.v = 0; result.w = 0; return result; }  /* X */
+    if (eX*eX + eZ*eZ < vtan2) { result.v = sv; result.u = 0; result.w = 0; return result; }  /* Y */
 
     const int    oct_mode = result.oct_mode;
     const double inv_H = H9.inv_H, inv_W = H9.inv_W, inv_2H = H9.inv_2H;
@@ -731,8 +776,10 @@ static H9BOct h9_lonlat_to_boct(double lon_rad, double lat_rad) {
 #ifndef H9_BOCT_TOL2
 #define H9_BOCT_TOL2 1e-20
 #endif
-    const double TOL2  = H9_BOCT_TOL2;
-    const double FAIL2 = 1e-14;   /* ‖r3‖ > 100 nm ⇒ genuine non-convergence */
+    /* Metric tolerances are metres² on WGS84 — rescale on the unit sphere. */
+    const double via2  = h9_g_via_sphere ? H9_VIA_INV_A2 : 1.0;
+    const double TOL2  = H9_BOCT_TOL2 * via2;
+    const double FAIL2 = 1e-14 * via2;   /* ‖r3‖ > 100 nm ⇒ non-convergence */
     double P[3], J3[3][2];
     h9_aj_jac3(fx, fy, oct_mode, su, sv, sw, P, J3);
     double r2 = (P[0]-eX)*(P[0]-eX) + (P[1]-eY)*(P[1]-eY) + (P[2]-eZ)*(P[2]-eZ);
@@ -790,15 +837,23 @@ static void h9_boct_to_lonlat(H9BOct b, double *lon_rad, double *lat_rad) {
     h9_c_ell_to_lonlat(X, Y, Z, lon_rad, lat_rad);
 }
 
-/* ── Degree convenience wrappers ─────────────────────────────────────────── */
+/* ── Degree convenience wrappers ─────────────────────────────────────────────
+ * The via-sphere authalic latitude reduction lives HERE, at the geodetic
+ * boundary of the pipeline: everything inside h9_lonlat_to_boct /
+ * h9_boct_to_lonlat operates on the (authalic) sphere when the mode is on. */
 
 static H9BOct h9_lonlatdeg_to_boct(double lon_deg, double lat_deg) {
-    return h9_lonlat_to_boct(lon_deg * (M_PI / 180.0), lat_deg * (M_PI / 180.0));
+    double lat_rad = lat_deg * (M_PI / 180.0);
+    if (h9_g_via_sphere)
+        lat_rad = h9_geodetic_to_authalic(&h9_g_authalic, lat_rad);
+    return h9_lonlat_to_boct(lon_deg * (M_PI / 180.0), lat_rad);
 }
 
 static void h9_boct_to_lonlatdeg(H9BOct b, double *lon_deg, double *lat_deg) {
     double lon_r, lat_r;
     h9_boct_to_lonlat(b, &lon_r, &lat_r);
+    if (h9_g_via_sphere)
+        lat_r = h9_authalic_to_geodetic(&h9_g_authalic, lat_r);
     *lon_deg = lon_r * (180.0 / M_PI);
     *lat_deg = lat_r * (180.0 / M_PI);
 }

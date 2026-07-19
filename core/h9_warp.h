@@ -16,6 +16,7 @@
 #define H9_WARP_H
 
 #include "h9_ct.h"
+#include "h9_warp_fund.h"
 #include "h9_warp_io.h"
 #include "h9_warp_mesh.h"
 
@@ -31,6 +32,13 @@ struct WarpState {
     WarpMesh        mesh;
     VertexNeighbors vn;
     CTState         ct;
+
+    /* v4 wedge-fold mode: the mesh covers only the fundamental wedge +
+     * halos; evaluation folds each query into the wedge by the D3 group
+     * and unfolds the displacement (δ(p) = Tᵀ·δ_w(T·p)). Set by
+     * finish_warp_state when the blob carries the FUND flag. */
+    bool     fold = false;
+    FundGeom fg;
     int             newton_iter   = 25;
     double          edge_tol      = 1e-7;     /* lateral-edge band */
     bool            edge_bypass   = true;     /* LATERAL_EDGE_BYPASS (legacy) */
@@ -76,6 +84,26 @@ inline bool finish_warp_state(WarpState& out,
                               int    grad_maxiter = 2000,
                               double grad_tol     = 1e-12)
 {
+    /* v4 wedge-fold blob: dedicated mesh build (wedge + reflection halos,
+     * gradients shipped + transformed — no estimation), then the shared
+     * CT-state build. Evaluation folds; see warp_do/warp_undo. */
+    if (out.data.fund) {
+        std::vector<std::array<double, 2>> gdx, gdy;
+        std::string ferr;
+        if (!build_fund_mesh(out.data, out.mesh, gdx, gdy, out.fg, &ferr))
+            return false;
+        const std::size_t n = out.mesh.padded_src.size();
+        std::vector<double> fdx(n), fdy(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            fdx[i] = out.mesh.padded_diff[i][0];
+            fdy[i] = out.mesh.padded_diff[i][1];
+        }
+        out.ct = build_ct_state(out.mesh, fdx.data(), fdy.data(), gdx, gdy);
+        out.fold = true;
+        out.field_has_grads = true;
+        return true;
+    }
+
     out.mesh = build_warp_mesh(out.data.deltas, out.data.header.level,
                                out.data.header.mode);
     const std::size_t n     = out.mesh.padded_src.size();
@@ -145,6 +173,33 @@ inline bool build_warp_state(const std::string& path,
     return true;
 }
 
+/* Raw (unfeathered) forward delta at mode-0 point (x, y). Fold mode:
+ * fold into the wedge, evaluate the wedge chart, unfold the displacement
+ * (row form δ = δ_w @ T — mirrors AuthalicWarp fold fwd_d). */
+inline void warp_eval_delta(const WarpState& ws, double x, double y,
+                            double* dx, double* dy)
+{
+    if (ws.fold) {
+        double fx, fy;
+        const int k = fund_fold(ws.fg, x, y, &fx, &fy);
+        double b[3];
+        const std::int32_t ti = ct_find_tri(ws.ct, fx, fy, b);
+        double dwx = 0.0, dwy = 0.0;
+        if (ti >= 0) {
+            dwx = ct_eval_with(ws.ct.coeffs_dx[ti], b);
+            dwy = ct_eval_with(ws.ct.coeffs_dy[ti], b);
+        }
+        const double* T = ws.fg.T[k];
+        *dx = dwx * T[0] + dwy * T[2];
+        *dy = dwx * T[1] + dwy * T[3];
+        return;
+    }
+    double b[3];
+    const std::int32_t ti = ct_find_tri(ws.ct, x, y, b);
+    *dx = (ti < 0) ? 0.0 : ct_eval_with(ws.ct.coeffs_dx[ti], b);
+    *dy = (ti < 0) ? 0.0 : ct_eval_with(ws.ct.coeffs_dy[ti], b);
+}
+
 /* Forward warp: b_raw → b_oct in mode-`mo`.
  *
  * mo=0 keeps y as-is; mo=1 mirrors y on entry and exit so the warp
@@ -173,12 +228,11 @@ inline void warp_do(const WarpState& ws,
     }
 
     const double scale = warp_edge_scale(ws, cx, cy);
-    double b[3];
-    const std::int32_t ti = ct_find_tri(ws.ct, cx, cy, b);
     double dx = 0.0, dy = 0.0;
-    if (scale > 0.0 && ti >= 0) {
-        dx = scale * ct_eval_with(ws.ct.coeffs_dx[ti], b);
-        dy = scale * ct_eval_with(ws.ct.coeffs_dy[ti], b);
+    if (scale > 0.0) {
+        warp_eval_delta(ws, cx, cy, &dx, &dy);
+        dx *= scale;
+        dy *= scale;
     }
     *wx = cx + dx;
     *wy = (cy + dy) * sign;
@@ -213,10 +267,10 @@ inline void warp_undo(const WarpState& ws,
      * evaluation (and therefore inside the FD Jacobian). */
     auto eval_d = [&ws](double x, double y, double* dx, double* dy) {
         const double scale = warp_edge_scale(ws, x, y);
-        double b[3];
-        const std::int32_t ti = (scale > 0.0) ? ct_find_tri(ws.ct, x, y, b) : -1;
-        *dx = (ti < 0) ? 0.0 : scale * ct_eval_with(ws.ct.coeffs_dx[ti], b);
-        *dy = (ti < 0) ? 0.0 : scale * ct_eval_with(ws.ct.coeffs_dy[ti], b);
+        if (scale <= 0.0) { *dx = 0.0; *dy = 0.0; return; }
+        warp_eval_delta(ws, x, y, dx, dy);
+        *dx *= scale;
+        *dy *= scale;
     };
 
     /* Identity seed. */

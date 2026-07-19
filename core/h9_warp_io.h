@@ -39,6 +39,7 @@ enum H9WarpDType : std::uint8_t {
 
 static constexpr std::uint8_t H9W_FLAG_MIRRORED      = 1u << 0;
 static constexpr std::uint8_t H9W_FLAG_HAS_GRADIENTS = 1u << 1;   /* v3 */
+static constexpr std::uint8_t H9W_FLAG_FUND          = 1u << 2;   /* v4 */
 
 struct H9WarpHeader {
     std::uint16_t version;       /* 1, 2 or 3 */
@@ -66,6 +67,11 @@ struct H9WarpData {
      * the consumer then estimates gradients itself (legacy path). */
     std::vector<std::array<double, 2>> grad_dx;
     std::vector<std::array<double, 2>> grad_dy;
+
+    /* v4: payload covers the fundamental wedge only (count = wedge vertex
+     * count, tri_mesh order filtered by the wedge test) — consumed by
+     * build_fund_mesh (h9_warp_fund.h), not build_warp_mesh. */
+    bool fund = false;
 
     bool has_gradients() const { return !grad_dx.empty(); }
 };
@@ -197,8 +203,13 @@ inline bool load_h9warp(const void* data, std::size_t len,
     /* v3 with gradients: payload is count × 6 f64 per vertex in tri_mesh
      * order — (dx, dy, ∂dx/∂x, ∂dx/∂y, ∂dy/∂x, ∂dy/∂y). Full format only
      * (the writer keeps the mirror flag clear); dtype must be f64 — the
-     * edge-tangent projection's exact zeros do not survive truncation. */
+     * edge-tangent projection's exact zeros do not survive truncation.
+     * v4 = same row format, but count covers only the fundamental wedge
+     * (tri_mesh order filtered by the wedge test): the count check moves
+     * to build_fund_mesh, which re-derives the wedge list. */
     if (out.header.version >= 3 && (out.header.flags & H9W_FLAG_HAS_GRADIENTS)) {
+        out.fund = (out.header.version >= 4) &&
+                   (out.header.flags & H9W_FLAG_FUND) != 0;
         if (out.header.flags & H9W_FLAG_MIRRORED) {
             if (err) *err = "h9warp v3: mirrored gradient format not supported";
             return false;
@@ -211,10 +222,13 @@ inline bool load_h9warp(const void* data, std::size_t len,
             if (err) *err = "h9warp v3: payload size mismatch";
             return false;
         }
-        const LatticeMesh mesh_v3 = tri_mesh(out.header.level, out.header.mode);
-        if (out.header.count != mesh_v3.verts.size()) {
-            if (err) *err = "h9warp v3: count != tri_mesh vertex count";
-            return false;
+        if (!out.fund) {
+            const LatticeMesh mesh_v3 =
+                tri_mesh(out.header.level, out.header.mode);
+            if (out.header.count != mesh_v3.verts.size()) {
+                if (err) *err = "h9warp v3: count != tri_mesh vertex count";
+                return false;
+            }
         }
         out.deltas.resize(out.header.count);
         out.grad_dx.resize(out.header.count);
