@@ -12,7 +12,7 @@
  * so a future dynamically-linked build fails loudly rather than emitting a
  * different regime's addresses (see hex9_c.h's version notes).
  */
-#include "h9_extension.hpp"
+#include "hex9_extension.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -53,17 +53,17 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterH9Table(loader);
 }
 
-void H9Extension::Load(ExtensionLoader &loader) {
+void Hex9Extension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
 
-std::string H9Extension::Name() {
-	return "h9";
+std::string Hex9Extension::Name() {
+	return "hex9";
 }
 
-std::string H9Extension::Version() const {
-#ifdef EXT_VERSION_H9
-	return EXT_VERSION_H9;
+std::string Hex9Extension::Version() const {
+#ifdef EXT_VERSION_HEX9
+	return EXT_VERSION_HEX9;
 #else
 	return "";
 #endif
@@ -72,7 +72,7 @@ std::string H9Extension::Version() const {
 } // namespace duckdb
 
 extern "C" {
-DUCKDB_CPP_EXTENSION_ENTRY(h9, loader) {
+DUCKDB_CPP_EXTENSION_ENTRY(hex9, loader) {
 	duckdb::LoadInternal(loader);
 }
 }

@@ -2,7 +2,7 @@
 # description: hex9 Hamiltonian curve — pin, round trips, HUGEINT index
 # group: [h9]
 
-require h9
+require hex9
 
 # Regime pin: curve of the edinburgh anchor (test_data/regime_pin.tsv)
 query I

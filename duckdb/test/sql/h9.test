@@ -2,7 +2,7 @@
 # description: hex9 core addressing — regime pins, round trips, WKB, doctrine-adjacent structure
 # group: [h9]
 
-require h9
+require hex9
 
 # hex9_version() is "libhex9 <ver> (<build date>)" — pin the version token only
 query I

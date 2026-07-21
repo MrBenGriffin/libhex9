@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5...3.29)
 
-set(TARGET_NAME h9)
+set(TARGET_NAME hex9)
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 project(${TARGET_NAME})

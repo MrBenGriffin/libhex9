@@ -2,7 +2,7 @@
 # description: set-returning surface — h9_grid, h9_curve_cells, h9_owned_cells
 # group: [h9]
 
-require h9
+require hex9
 
 # ── h9_grid ──
 # Bin-keyed-geometry-by-JOIN guarantee: the enumerated h9_bin IS h9_bin(h9_id, layer)

@@ -1,4 +1,4 @@
-# hex9 DuckDB extension (`h9`)
+# hex9 DuckDB extension (`hex9`)
 
 A DuckDB extension exposing the Hex9 DGGS over the libhex9 C ABI (`hex9_c.h`):
 vectorized scalar functions for encode/decode/bin, cell geometry (WKB),
@@ -26,7 +26,7 @@ make test                # runs test/sql/*.test (sqllogictest)
 ./build/release/duckdb   # shell with h9 statically loaded
 ```
 
-The loadable artifact is `build/release/extension/h9/h9.duckdb_extension`.
+The loadable artifact is `build/release/extension/hex9/hex9.duckdb_extension`.
 
 ## Types
 

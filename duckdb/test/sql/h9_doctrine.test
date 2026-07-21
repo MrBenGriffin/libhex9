@@ -2,7 +2,7 @@
 # description: addressing-doctrine guards — bins are layer keys, not addresses
 # group: [h9]
 
-require h9
+require hex9
 
 # Adjacency rejects bin input (docs/addressing-doctrine.md; mirrors postgis_hex9)
 statement error

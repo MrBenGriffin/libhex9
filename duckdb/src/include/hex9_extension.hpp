@@ -4,7 +4,7 @@
 
 namespace duckdb {
 
-class H9Extension : public Extension {
+class Hex9Extension : public Extension {
 public:
 	void Load(ExtensionLoader &loader) override;
 	std::string Name() override;
