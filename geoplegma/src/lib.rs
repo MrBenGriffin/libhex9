@@ -8,6 +8,28 @@
 //! Every public Hex9 UUID is a 16-byte (`[u8; 16]`) self-contained address; the
 //! human/text form is `"<x_list>.<T>"` (e.g. `"43527.4"`). The deepest layer is
 //! reported by [`hex9_lmax`] (30 on the default reclaimed layout, 29 legacy).
+//!
+//! Beyond point addressing the ABI covers the Hamiltonian curve (`hex9_curve*`
+//! — sortable curve-uuids, numeric indices, exact prefix coarsening), the
+//! warped octahedral cartesian CRS `w_oct` used as the 3D point-cloud storage
+//! baseline (`hex9_boct_to_woct` / `hex9_woct_to_boct`), and the lineage /
+//! ownership hierarchy relations.
+//!
+//! # Warp regime
+//!
+//! An address is only meaningful alongside the projection that produced it,
+//! and nothing in the 16 bytes records which projection that was.
+//!
+//! There is one regime: the authalic latitude series feeding a unit-sphere
+//! core under the Sphere-L6 wedge-fold field. libhex9 2.0.0 removed the
+//! earlier WGS84-trained regime rather than let a point carry two
+//! indistinguishable addresses — but that change moves addresses from about
+//! layer 7 downward. Addresses minted by 1.x must be re-derived from source
+//! geometry, never remapped by decode-and-re-encode. See
+//! `docs/warp-regimes.md`.
+//!
+//! [`hex9_warp_init`] must succeed before any addressing call; on failure the
+//! core falls back to an identity field whose output is *not* a Hex9 address.
 
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]

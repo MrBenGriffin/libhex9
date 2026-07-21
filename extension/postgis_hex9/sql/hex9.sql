@@ -187,24 +187,24 @@ WITH pt AS (
     SELECT h9_encode(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)) AS u
 )
 SELECT
-    h9_parse_label('435878503')          = h9_bin(u, 8) AS parse_bare,
+    h9_parse_label('435878530')          = h9_bin(u, 8) AS parse_bare,
     h9_parse_label(h9_label_key(u, 8))   = h9_bin(u, 8) AS parse_keyed,
-    h9_label(h9_parse_label('435878503'), 8) = '435878503' AS label_round_trip,
-    ST_Equals(h9_label_centroid('435878503'),
+    h9_label(h9_parse_label('435878530'), 8) = '435878530' AS label_round_trip,
+    ST_Equals(h9_label_centroid('435878530'),
               h9_decode(h9_bin(u, 8)))                   AS centroid_matches
 FROM pt;
 
 -- Invalid label must raise an error.
 SELECT h9_parse_label('not-a-label');
 
--- Common ancestor: a cell with itself is itself; Westminster ('435878503')
--- and Edinburgh ('432177478') L8 cells share the prefix '43' (layer 1).
+-- Common ancestor: a cell with itself is itself; Westminster ('435878530')
+-- and Edinburgh ('432177468') L8 cells share the prefix '43' (layer 1).
 WITH cells AS (
-    SELECT h9_parse_label('435878503') AS lon_cell,
-           h9_parse_label('432177478') AS edi_cell
+    SELECT h9_parse_label('435878530') AS lon_cell,
+           h9_parse_label('432177468') AS edi_cell
 )
 SELECT
-    (h9_common_ancestor(ARRAY[lon_cell, lon_cell], 8)).label = '435878503'
+    (h9_common_ancestor(ARRAY[lon_cell, lon_cell], 8)).label = '435878530'
                                                        AS self_ancestor,
     (h9_common_ancestor(ARRAY[lon_cell, lon_cell], 8)).layer = 8
                                                        AS self_layer,

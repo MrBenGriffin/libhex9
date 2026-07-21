@@ -85,13 +85,30 @@ sudo make install
 >
 > If they differ, pass the right one explicitly, e.g. for Postgres.app:
 > `PG_CONFIG=/Applications/Postgres.app/Contents/Versions/18/bin/pg_config`.
+>
+> Since 2.0.0 you do not have to remember: `make installcheck` compares the
+> `pg_config` you built with against the running server's own `PKGLIBDIR` and
+> refuses to proceed on a mismatch, printing the correct `PG_CONFIG=` line.
+> `POSTGIS_SRC` is likewise checked against the server's loaded PostGIS, and
+> discovered automatically where possible.
+
+**Tip — pin it once.** Both variables are machine-specific and easy to get
+silently wrong. Put them in `extension/postgis_hex9/Makefile.local`
+(gitignored, included automatically) and then plain `make` does the right
+thing:
+
+```make
+# Makefile.local
+PG_CONFIG   = /Applications/Postgres.app/Contents/Versions/18/bin/pg_config
+POSTGIS_SRC = /Users/you/src/postgis-3.6.3
+```
 
 Then, in the database:
 
 ```sql
 CREATE EXTENSION postgis;          -- required first
 CREATE EXTENSION postgis_hex9;
-ALTER EXTENSION postgis_hex9 UPDATE TO '1.5.0'; -- latest version
+ALTER EXTENSION postgis_hex9 UPDATE TO '2.0.0'; -- latest version
 ```
 
 - `HEX9_PREFIX` must match the prefix you installed `libhex9` to (default
@@ -99,6 +116,46 @@ ALTER EXTENSION postgis_hex9 UPDATE TO '1.5.0'; -- latest version
   `libhex9.{so,dylib}` must be present on the **database host** at runtime.
 - OpenMP acceleration comes for free — it lives inside the linked `libhex9`.
 - Verify against a running server: `make installcheck` (needs postgis loaded).
+
+### Upgrading from 1.x — rebuild the extension, and delete the old library
+
+Upgrading libhex9 alone is **not enough**, and the failure is silent.
+
+The shared library carries an `SOVERSION`, so 2.0.0 installs as
+`libhex9.2.dylib` / `libhex9.so.2` — a *different filename*. It does not
+replace `libhex9.0.*`, which stays on disk. An extension module built against
+1.x goes on resolving and loading 1.x quite happily, so the database keeps
+producing **1.x addresses** while the control file, `h9_version()` and every
+release note say 2.0.0. Since 2.0.0 changed the projection, that is wrong data,
+not a cosmetic version skew.
+
+`postgis_hex9` 2.0.0 detects this and refuses to load, telling you what to do.
+The fix:
+
+```sh
+# 1. install the new library
+cmake --install build
+
+# 2. remove superseded libhex9 shared libraries — do NOT skip this. While they
+#    remain, a rebuild may link 1.x again, because -L/usr/local/lib can win the
+#    linker's search order over your build tree.
+rm /usr/local/lib/libhex9.0.*        # adjust for your prefix / .so on Linux
+
+# 3. rebuild and reinstall the extension against the new library
+cd extension/postgis_hex9 && make clean && make && sudo make install
+```
+
+Then in the database:
+
+```sql
+ALTER EXTENSION postgis_hex9 UPDATE TO '2.0.0';
+SELECT h9_version();   -- should report 2.0.0 and libhex9 2.0.0
+```
+
+> **Your stored addresses are now stale.** They are not updated by the upgrade
+> and must be re-derived from source geometry — never remapped by
+> decode-and-re-encode. Read [`docs/warp-regimes.md`](docs/warp-regimes.md)
+> before touching any table that stores Hex9 addresses.
 
 ---
 

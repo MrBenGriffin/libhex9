@@ -57,21 +57,22 @@ PG_MODULE_MAGIC;
 
 /* ── GUC variables ────────────────────────────────────────────────────────
  *
- * The core's runtime toggles (warp on/off, encoder choice) are owned by
- * libhex9; the GUCs here are thin mirrors whose assign hooks forward the
- * value through the C ABI. */
+ * Only resource limits are GUCs here. NOTHING that can change an address is,
+ * and nothing that can should ever become one.
+ *
+ * The addressing functions are IMMUTABLE — they are used in functional
+ * indexes and generated columns, so PostgreSQL is entitled to compute a value
+ * once and reuse it forever. A session-settable input to those functions
+ * means two sessions disagree about what a stored index entry means, and an
+ * index built under one setting silently fails to match its own table under
+ * the other. That is data corruption with no error raised.
+ *
+ * libhex9 keeps two such toggles for the hhg9 A-B parity harness
+ * (hex9_set_use_warp, hex9_set_encoder). Both are deliberately unreachable
+ * from SQL. Until 2.0.0, `hex9.use_warp` WAS a PGC_USERSET GUC wired to the
+ * first of them — a latent instance of exactly this bug. It is gone; the core
+ * default (warp on) is simply left in place. */
 static int h9_grid_max_cells;
-
-/* The encoder is NOT a GUC. h9_encode must be IMMUTABLE (it is used in
- * functional indexes and generated columns), so its result cannot depend on a
- * session setting. The core defaults to the containment (grid-canonical)
- * encoder; the legacy NN path remains in libhex9 for embedder/A-B research
- * only (hex9_set_encoder), never wired to PostgreSQL. See hex9_c.cpp. */
-static bool h9_use_warp = true;
-
-static void h9_use_warp_assign(bool newval, void *extra) {
-	hex9_set_use_warp(newval ? 1 : 0);
-}
 
 /* Resolve liblwgeom entry points (see h9_lwgeom_shim.h). Defined here, ahead of
  * the redirect macros, so the real symbol names reach dlsym. */
@@ -107,19 +108,72 @@ extern "C" void h9_lwgeom_resolve(void) {
 	#undef H9_RESOLVE
 }
 
+/* Refuse to run against a libhex9 we were not built for.
+ *
+ * The shared library carries an SOVERSION, so a major upgrade installs under
+ * a NEW filename (libhex9.2.dylib) and does NOT replace its predecessor
+ * (libhex9.0.dylib). A module built against 1.x therefore keeps resolving and
+ * loading 1.x indefinitely after an upgrade — no error, no missing symbol.
+ *
+ * That is benign for most libraries and dangerous for this one: 2.0.0 changed
+ * the addressing chain, so such a module would keep emitting the PREVIOUS
+ * regime's addresses while the control file, h9_version() and every release
+ * note said 2.0.0. The divergence starts around layer 7 and is invisible in
+ * the data — nothing in a 16-byte address records which regime made it.
+ *
+ * So: compare the header we compiled against (HEX9_VERSION) with the library
+ * actually loaded (hex9_version()), and ERROR rather than proceed. A refusal
+ * to load is recoverable in one command; silently mis-addressed data is not.
+ */
+static void h9_check_lib_version(void) {
+	const char *runtime = hex9_version();   /* "libhex9 <ver> (<date> <time>)" */
+	const char *p = runtime;
+
+	/* Skip the leading "libhex9 " so we compare version to version. */
+	const char *sp = strchr(runtime, ' ');
+	if (sp) p = sp + 1;
+
+	const size_t want = strlen(HEX9_VERSION);
+	/* Match the version token exactly: equal prefix AND a terminator after it,
+	 * so "2.0.0" does not satisfy a check for "2.0.0-rc1" or vice versa. */
+	if (strncmp(p, HEX9_VERSION, want) != 0 ||
+	    (p[want] != '\0' && p[want] != ' ')) {
+		ereport(ERROR,
+			(errmsg("postgis_hex9: libhex9 version mismatch"),
+			 errdetail("Built against libhex9 %s, but loaded \"%s\".",
+			           HEX9_VERSION, runtime),
+			 errhint("A major libhex9 upgrade installs under a new SOVERSION "
+			         "filename and leaves the old library in place, so this "
+			         "module can keep loading the previous one. Rebuild and "
+			         "reinstall the extension against the installed libhex9, "
+			         "and remove superseded libhex9 shared libraries. This is "
+			         "not cosmetic: libhex9 2.0.0 changed the addressing "
+			         "chain, so a stale library produces different Hex9 "
+			         "addresses for the same point.")));
+	}
+}
+
 extern "C" PGDLLEXPORT void _PG_init(void);
 extern "C" PGDLLEXPORT void _PG_init(void) {
 	/* Resolve liblwgeom first — every geometry-producing function depends on
 	 * it, and this also ensures PostGIS is loaded for the rest of init. */
 	h9_lwgeom_resolve();
 
-	/* Warp init takes ~13 s and runs once per backend (idempotent in the
-	 * core). On failure the core falls back to the identity warp. */
+	/* Before anything can compute an address, prove we are talking to the
+	 * libhex9 we were compiled against. */
+	h9_check_lib_version();
+
+	/* Warp init runs once per backend (idempotent in the core). On failure
+	 * the core falls back to an identity field, which does NOT produce Hex9
+	 * addresses — so this is an ERROR, not a warning. Emitting plausible
+	 * wrong addresses is worse than refusing to start. */
 	char errbuf[256];
 	if (hex9_warp_init(errbuf, sizeof(errbuf)) != 0) {
-		ereport(WARNING,
-			(errmsg("postgis_hex9: warp init failed: %s "
-			        "(falling back to identity warp)", errbuf)));
+		ereport(ERROR,
+			(errmsg("postgis_hex9: warp init failed: %s", errbuf),
+			 errhint("Without the warp field the core falls back to an "
+			         "identity projection, whose output is NOT a Hex9 "
+			         "address. Refusing to start rather than emit them.")));
 	}
 
 	/* hex9.grid_max_cells — operator-tunable safety cap for h9_grid.
@@ -140,30 +194,9 @@ extern "C" PGDLLEXPORT void _PG_init(void) {
 		0,
 		NULL, NULL, NULL);
 
-	/* hex9.use_warp — runtime toggle for the authalic warp.
-	 *
-	 *   SET hex9.use_warp = off;   -- bypass warp, fall through to identity
-	 *   SET hex9.use_warp = on;    -- re-enable (default)
-	 *
-	 * Useful for A/B comparison ("does this query differ with/without
-	 * warp?") without rebuilding. Affects both addressing (encode/decode)
-	 * and grid (cell-vertex projection) since both go through the same
-	 * warp shim inside the core. */
-	DefineCustomBoolVariable(
-		"hex9.use_warp",
-		"Apply the authalic warp when projecting cells / encoding points.",
-		"When off, the warp is identity. The warp state is still built at "
-		"backend start (~13 s); only the apply is bypassed.",
-		&h9_use_warp,
-		true,           /* boot */
-		PGC_USERSET,
-		0,
-		NULL, h9_use_warp_assign, NULL);
-
-	/* Push the boot/conf value into the core (the assign hook only fires on
-	 * changes after this point). The encoder is left at the core default
-	 * (containment) — deliberately not settable from SQL. */
-	hex9_set_use_warp(h9_use_warp ? 1 : 0);
+	/* No addressing GUCs. See the note by h9_grid_max_cells: the core's warp
+	 * and encoder toggles stay at their defaults here and are not reachable
+	 * from SQL, because IMMUTABLE functions may not depend on session state. */
 }
 
 /* Redirect the natural liblwgeom names onto the runtime-resolved pointers
@@ -194,10 +227,19 @@ PG_FUNCTION_INFO_V1(h9_version);
 #ifndef H9_GIT_REV
 #define H9_GIT_REV "dev"
 #endif
+
+/* Set by the Makefile from postgis_hex9.control's default_version, so this
+ * string cannot drift from the extension's real version — it said "1.2.0"
+ * through three releases because it was a hand-edited literal. */
+#ifndef H9_EXT_VERSION
+#define H9_EXT_VERSION "unknown"
+#endif
+
 Datum h9_version(PG_FUNCTION_ARGS) {
 	char buf[256];
 	snprintf(buf, sizeof(buf),
-	         "postgis_hex9 1.2.0+" H9_GIT_REV " built " __DATE__ " " __TIME__
+	         "postgis_hex9 " H9_EXT_VERSION "+" H9_GIT_REV
+	         " built " __DATE__ " " __TIME__
 	         " (%s)", hex9_version());
 	PG_RETURN_TEXT_P(cstring_to_text(buf));
 }

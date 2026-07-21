@@ -1,5 +1,44 @@
 cmake_minimum_required(VERSION 3.16)
-project(libhex9 LANGUAGES CXX C)
+
+# ── macOS deployment target ─────────────────────────────────────────────────
+# macOS only, and only as a default the caller can override.
+#
+# Without this, libhex9 builds against whatever SDK the host has while
+# PostgreSQL's PGXS compiles the extension with its own (older) target — on a
+# Postgres.app build that is -mmacosx-version-min=11.0. The link then warns
+#     "building for macOS-11.0, but linking with dylib ... built for newer
+#      version 26.5"
+# and the resulting module CLAIMS to support macOS 11 while depending on a
+# library that does not. Harmless when both sit on the same machine; a lie the
+# moment anything is distributed.
+#
+# 11.0 (Big Sur) matches what the common PostgreSQL distributions target.
+# Must be set BEFORE project() — CMake consumes it while configuring the
+# compiler, so setting it later has no effect on the flags actually used.
+if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING
+      "Minimum macOS version libhex9 targets (match your PostgreSQL's)")
+endif()
+
+project(libhex9 VERSION 2.0.0 LANGUAGES CXX C)
+
+# ── Version consistency ─────────────────────────────────────────────────────
+# HEX9_VERSION in the public header is hand-maintained (the header is shipped
+# and hand-written, not generated). Assert it matches project() so the two
+# cannot drift: hex9_version() reported "0.1.0" for months precisely because
+# nothing checked. A consumer's compile-time/runtime version guard is only as
+# trustworthy as this equality.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/hex9_c.h" _h9_ver_line
+     REGEX "^#define[ \t]+HEX9_VERSION[ \t]+\"")
+string(REGEX REPLACE ".*\"([^\"]+)\".*" "\\1" _h9_hdr_ver "${_h9_ver_line}")
+if(NOT _h9_hdr_ver STREQUAL PROJECT_VERSION)
+  message(FATAL_ERROR
+    "libhex9: version mismatch between build and public header.\n"
+    "    CMakeLists.txt project(): ${PROJECT_VERSION}\n"
+    "    hex9_c.h HEX9_VERSION:    ${_h9_hdr_ver}\n"
+    "Update both together — consumers compare HEX9_VERSION against "
+    "hex9_version() to detect a stale shared library.")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,35 +60,24 @@ endif()
 
 # ── Embedded warp blob ──────────────────────────────────────────────────────
 # core/h9_warp_embedded.cpp .incbin's this file at compile time. It is the
-# F6 v3 (delta+gradient) sidecar generated from the sinkhorn warp on the hhg9
+# Sphere-L6 fundamental-domain (v4 wedge-fold) sidecar generated on the hhg9
 # python side — checked into core/, so a normal build needs nothing external.
 # If it is missing, the assembler error from .incbin is opaque; fail early with
 # a pointer to the regeneration step instead.
+#
+# ONE blob since 2.0.0. The WGS84-trained F6 v3 field that used to sit beside
+# it was a second addressing regime — same point, different address, nothing
+# in the 16 bytes to distinguish them. Removed with the regime.
 set(H9_WARP_BLOB_PATH
-  "${CMAKE_CURRENT_SOURCE_DIR}/core/WGS84_l5_warp_f6.full.f64g.h9warp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/Sphere_l6_fund.f64g.h9warp")
 if(NOT EXISTS "${H9_WARP_BLOB_PATH}")
   message(FATAL_ERROR
     "libhex9: embedded warp blob not found:\n"
     "    ${H9_WARP_BLOB_PATH}\n"
-    "The library .incbin's this F6 v3 (delta+gradient) sidecar at compile time.\n"
-    "It is normally checked into core/. To regenerate it, run the producers in\n"
-    "tools/support/ from a python env with hhg9 importable (see that README):\n"
-    "    python tools/support/export_warp_grads.py   # -> WGS84_l5_warp_grads.npz\n"
-    "    python tools/support/export_warp_v3.py       # -> the .h9warp blob above\n"
-    "Inputs come from the hhg9/hex9 python repo (WGS84_l5_warp_data.npz).")
-endif()
-
-# Via-sphere: the Sphere-L6 fundamental-domain (v4 wedge-fold) sidecar,
-# consumed by hex9_set_via_sphere(). Regenerate with
-#     python tools/support/export_warp_fund_v4.py
-# from a python env with hhg9 importable (input: Sphere_l6_fund_warp_data.npz).
-set(H9_WARP_SPH_BLOB_PATH
-  "${CMAKE_CURRENT_SOURCE_DIR}/core/Sphere_l6_fund.f64g.h9warp")
-if(NOT EXISTS "${H9_WARP_SPH_BLOB_PATH}")
-  message(FATAL_ERROR
-    "libhex9: embedded via-sphere warp blob not found:\n"
-    "    ${H9_WARP_SPH_BLOB_PATH}\n"
-    "Regenerate: python tools/support/export_warp_fund_v4.py")
+    "The library .incbin's this v4 fund (delta+gradient) sidecar at compile time.\n"
+    "It is normally checked into core/. Regenerate it from a python env with\n"
+    "hhg9 importable (input: Sphere_l6_fund_warp_data.npz):\n"
+    "    python tools/support/export_warp_fund_v4.py")
 endif()
 
 # ── libhex9 shared library ──────────────────────────────────────────────────
@@ -64,10 +92,9 @@ target_include_directories(hex9
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)      # the C++ core
 target_compile_definitions(hex9 PRIVATE
   H9_WARP_ENABLE=1
-  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}"
-  H9_WARP_SPH_BLOB="${H9_WARP_SPH_BLOB_PATH}")
+  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}")
 set_target_properties(hex9 PROPERTIES
-  VERSION 0.1.0 SOVERSION 0
+  VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}
   OUTPUT_NAME hex9
   PUBLIC_HEADER hex9_c.h)
 
@@ -98,8 +125,7 @@ target_include_directories(hex9Static
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core)
 target_compile_definitions(hex9Static PRIVATE
   H9_WARP_ENABLE=1
-  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}"
-  H9_WARP_SPH_BLOB="${H9_WARP_SPH_BLOB_PATH}")
+  H9_WARP_BLOB="${H9_WARP_BLOB_PATH}")
 set_target_properties(hex9Static PROPERTIES OUTPUT_NAME hex9 POSITION_INDEPENDENT_CODE ON)
 
 # ── install (cross-platform) ────────────────────────────────────────────────
@@ -175,11 +201,39 @@ target_compile_definitions(fund_warp PRIVATE
 add_test(NAME fund_warp COMMAND fund_warp)
 
 # End-to-end via-sphere chain vs the hhg9 Python reference (public ABI).
+# THE ORACLE: every frozen expectation in the suite is downstream of this one.
 add_executable(via_sphere test/via_sphere.c)
 target_link_libraries(via_sphere PRIVATE hex9)
 target_compile_definitions(via_sphere PRIVATE
   H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME via_sphere COMMAND via_sphere)
+
+# The same chain at its worst-conditioned points: polar approach, the poles
+# from every seam meridian, straddled seams into the polar band, and the
+# octant corners. Covers the 88..90 deg pole x seam band that the hhg9 pytests
+# reach from neither side. Reference: tools/support/gen_pole_seam_ref.py.
+add_executable(pole_seam test/pole_seam.c)
+target_link_libraries(pole_seam PRIVATE hex9)
+target_compile_definitions(pole_seam PRIVATE
+  H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME pole_seam COMMAND pole_seam)
+
+# Regime pin: the frozen lon/lat -> uuid -> curve goldens and the ownership
+# ladder. Catches ANY projection/warp change — the guard that was missing when
+# the 2.0.0 regime change slipped past the whole suite. Regenerate goldens
+# deliberately with the gen_regime_pin tool below, never to "make it pass".
+add_executable(regime_pin test/regime_pin.c)
+target_link_libraries(regime_pin PRIVATE hex9)
+target_compile_definitions(regime_pin PRIVATE
+  H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME regime_pin COMMAND regime_pin)
+
+# Producer for the regime-pin goldens. Not a test — run by hand, and ONLY from
+# a build where via_sphere passes (it records, it does not validate).
+add_executable(gen_regime_pin EXCLUDE_FROM_ALL tools/gen_regime_pin.c)
+target_link_libraries(gen_regime_pin PRIVATE hex9)
+target_compile_definitions(gen_regime_pin PRIVATE
+  H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(full_id test/full_id.c)
 target_link_libraries(full_id PRIVATE hex9)

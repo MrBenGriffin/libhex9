@@ -95,7 +95,7 @@ static inline void decode_one(const uint8_t uuid[16], double *lon, double *lat) 
 }
 
 extern "C" const char *hex9_version(void) {
-    return "libhex9 0.1.0 (" __DATE__ " " __TIME__ ")";
+    return "libhex9 " HEX9_VERSION " (" __DATE__ " " __TIME__ ")";
 }
 
 extern "C" int hex9_lmax(void) {
@@ -104,6 +104,16 @@ extern "C" int hex9_lmax(void) {
 
 extern "C" int hex9_warp_init(char *errbuf, size_t errlen) {
     std::string err;
+    /* The authalic series is the ellipsoid-specific half of the chain; the
+     * warp field is the other. Neither is optional — an address cannot be
+     * formed without both. */
+    if (!h9_authalic_ensure()) {
+        if (errbuf && errlen) {
+            std::strncpy(errbuf, "authalic series init failed", errlen - 1);
+            errbuf[errlen - 1] = '\0';
+        }
+        return 1;
+    }
     const bool ok = h9::h9_warp_init_embedded(&err);
     if (!ok && errbuf && errlen) {
         std::strncpy(errbuf, err.c_str(), errlen - 1);
@@ -114,29 +124,6 @@ extern "C" int hex9_warp_init(char *errbuf, size_t errlen) {
 
 extern "C" void hex9_set_use_warp(int on) { h9::g_warp_use = (on != 0); }
 extern "C" void hex9_set_encoder(int mode) { g_encoder_mode = mode; }
-
-extern "C" int hex9_set_via_sphere(int on, char *errbuf, size_t errlen) {
-    if (on) {
-        std::string err;
-        if (!h9::h9_warp_init_embedded_sph(&err)) {
-            if (errbuf && errlen) {
-                std::strncpy(errbuf, err.c_str(), errlen - 1);
-                errbuf[errlen - 1] = '\0';
-            }
-            return 1;
-        }
-        if (!h9_via_sphere_set(1)) {
-            if (errbuf && errlen) {
-                std::strncpy(errbuf, "authalic series init failed", errlen - 1);
-                errbuf[errlen - 1] = '\0';
-            }
-            return 1;
-        }
-        return 0;
-    }
-    h9_via_sphere_set(0);
-    return 0;
-}
 
 extern "C" int hex9_encode(double lon, double lat, uint8_t out_uuid[16]) {
     encode_one(lon, lat, out_uuid);

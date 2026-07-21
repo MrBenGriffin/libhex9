@@ -40,30 +40,64 @@
 extern "C" {
 #endif
 
+/* ── Version ───────────────────────────────────────────────────────────────
+ *
+ * HEX9_VERSION is a COMPILE-TIME constant: it records the version of the
+ * header a consumer built against. hex9_version() is a RUNTIME call: it
+ * reports the version of the shared library actually loaded. Comparing the
+ * two is the only way a consumer can detect that it is running against a
+ * different libhex9 from the one it was compiled for.
+ *
+ * That check matters more than it looks. The shared library carries an
+ * SOVERSION, so a major bump installs under a NEW filename and does not
+ * replace its predecessor. A consumer built against 1.x therefore keeps
+ * loading 1.x after an upgrade, quite happily — and since 2.0.0 changed what
+ * addresses the chain produces, it would go on emitting the old regime's
+ * addresses while every version string around it said 2.0.0. Silent, and
+ * invisible in the data. Consumers that persist addresses SHOULD refuse to
+ * start on a mismatch: see postgis_hex9's _PG_init for the pattern.
+ */
+#define HEX9_VERSION       "2.0.0"
+#define HEX9_VERSION_MAJOR 2
+#define HEX9_VERSION_MINOR 0
+#define HEX9_VERSION_PATCH 0
+
 /* ── Lifecycle / configuration ─────────────────────────────────────────────
  *
- * hex9_warp_init() builds the authalic-warp interpolation state once. It is
- * idempotent and should be called from the extension's _PG_init(). Returns 0
- * on success; on failure writes a message into errbuf (if errlen > 0) and
- * returns non-zero (the caller may fall back to the identity warp).
+ * hex9_warp_init() builds the addressing chain once: the authalic latitude
+ * series and the Sphere-L6 warp field (~1 s — the embedded v4 fund blob ships
+ * its own gradients). It is idempotent and should be called from the
+ * extension's _PG_init(). Returns 0 on success; on failure writes a message
+ * into errbuf (if errlen > 0) and returns non-zero. On failure the library
+ * degrades to an unwarped identity field: it will still produce addresses,
+ * but they are NOT Hex9 addresses. Treat a non-zero return as fatal.
+ *
+ * There is ONE addressing regime. Until 2.0.0 a WGS84-trained field could be
+ * selected at runtime, which meant a single point had two possible addresses
+ * with nothing in the 16 bytes to tell them apart. Both the selector and that
+ * field are gone. Data addressed by 1.x must be re-derived from its source
+ * geometry — decode-and-re-encode silently invalidates anything derived from
+ * it. See docs/warp-regimes.md.
  */
 const char *hex9_version(void);                       /* libhex9 build/version string */
 int         hex9_lmax(void);                          /* deepest addressable layer (29 legacy / 30) */
 int         hex9_warp_init(char *errbuf, size_t errlen);
 
-/* Runtime toggles, mirroring the extension GUCs. Safe to call any time. */
-void        hex9_set_use_warp(int on);                /* hex9.use_warp: 0/1 */
-void        hex9_set_encoder(int mode);               /* hex9.encoder: 0=nn, 1=containment */
+/* ── Dev / A-B research toggles ────────────────────────────────────────────
+ *
+ * Neither is wired to SQL, and neither should be: the addressing functions are
+ * IMMUTABLE, so their result must not depend on mutable process state. An
+ * index built under one setting would silently fail to match its own table
+ * under the other. These exist for the hhg9 parity harness.
+ */
 
-/* Via-sphere chain (mirrors hhg9 Registrar(via_sphere=True)): geodetic
- * latitude → authalic latitude (Karney series), true-sphere core, and the
- * Sphere-L6 wedge-fold warp instead of the WGS84-trained field. Enabling
- * lazily builds the sphere warp state from the embedded v4 fund blob
- * (~1 s, idempotent). Returns 0 on success; on failure writes errbuf and
- * leaves the mode unchanged. Disabling (on=0) always succeeds. NOT
- * thread-safe against in-flight batch calls — set it between batches,
- * like hex9_set_use_warp. */
-int         hex9_set_via_sphere(int on, char *errbuf, size_t errlen);
+/* 0 = identity (NOT Hex9 addresses — the raw, non-equal-area lattice),
+ * 1 = apply the warp (default). The hhg9 b_oct backend's warp/no-warp A-B. */
+void        hex9_set_use_warp(int on);
+
+/* Encoder selection: 0 = nearest-neighbour (embedder/A-B research only),
+ * 1 = containment (grid-canonical; the default). */
+void        hex9_set_encoder(int mode);
 
 /* ── Point addressing ──────────────────────────────────────────────────────*/
 

@@ -19,6 +19,18 @@
 #   sudo make install
 #   make installcheck   # requires PostgreSQL with postgis already loaded
 
+# ── Machine-local settings ───────────────────────────────────────────────────
+# Optional, gitignored. The two variables below (PG_CONFIG, POSTGIS_SRC) are
+# machine-specific and easy to get silently wrong; pin them here once:
+#
+#     # Makefile.local
+#     PG_CONFIG   = /Applications/Postgres.app/Contents/Versions/18/bin/pg_config
+#     POSTGIS_SRC = /path/to/postgis-3.6.3
+#
+# Included first so it wins over the defaults below.
+-include Makefile.local
+
+PSQL        ?= psql
 PG_CONFIG   ?= pg_config
 PGXS        := $(shell $(PG_CONFIG) --pgxs)
 
@@ -29,12 +41,13 @@ MODULE_big  = postgis_hex9-3
 # installed libhex9 (see below). Object lives under ./build/ so Xcode (which
 # scans the source dir for .o inputs) doesn't pick it up and double-link.
 OBJS        = build/lwgeom_hex9.o
-DATA        = postgis_hex9--1.5.0.sql \
+DATA        = postgis_hex9--2.0.0.sql \
               postgis_hex9--1.0.0--1.1.0.sql \
               postgis_hex9--1.1.0--1.2.0.sql \
               postgis_hex9--1.2.0--1.3.0.sql \
               postgis_hex9--1.3.0--1.4.0.sql \
-              postgis_hex9--1.4.0--1.5.0.sql
+              postgis_hex9--1.4.0--1.5.0.sql \
+              postgis_hex9--1.5.0--2.0.0.sql
 
 # ── Regression tests ──────────────────────────────────────────────────────────
 REGRESS      = hex9
@@ -49,9 +62,33 @@ H9_INCDIR   ?= $(HEX9_PREFIX)/include
 H9_LIBDIR   ?= $(HEX9_PREFIX)/lib
 
 # ── PostGIS source headers ────────────────────────────────────────────────────
-# liblwgeom headers are not installed by packagers; point POSTGIS_SRC at an
-# unpacked PostGIS source tree matching the loaded postgis version.
-POSTGIS_SRC ?= /Users/ben/Documents/Projects/postgis-3.6.2
+# liblwgeom headers are installed by NO packager (not Homebrew, not Postgres.app,
+# not the PGDG builds), so this glue needs an unpacked PostGIS SOURCE tree — and
+# one whose MINOR version matches the PostGIS the server actually loaded, since
+# LWGEOM/GSERIALIZED layouts are only stable within a minor release.
+#
+# There is deliberately NO default path. A wrong default is worse than none: it
+# produces include errors that point at someone else's directory instead of
+# naming the variable you need to set.
+#
+# If unset, try to find one — ask the running server which PostGIS it loaded,
+# then look for a matching source tree in the usual places. The version-matched
+# candidate is preferred; whatever is chosen is PRINTED, never assumed silently.
+ifeq ($(origin POSTGIS_SRC), undefined)
+  H9_GIS_VER := $(shell for db in postgres contrib_regression template1; do \
+      v=`$(PSQL) -X -tA -c "SELECT postgis_lib_version()" $$db 2>/dev/null`; \
+      [ -n "$$v" ] && { echo $$v; break; }; done)
+  H9_GIS_ROOTS := $(CURDIR)/../.. $(CURDIR)/../../.. $(HOME)/src \
+                  $(HOME)/Documents/Projects /usr/local/src /usr/src /opt
+  H9_GIS_HITS := $(wildcard \
+      $(foreach d,$(H9_GIS_ROOTS),$(d)/postgis-$(H9_GIS_VER)/liblwgeom/liblwgeom.h) \
+      $(foreach d,$(H9_GIS_ROOTS),$(d)/postgis-*/liblwgeom/liblwgeom.h) \
+      $(foreach d,$(H9_GIS_ROOTS),$(d)/postgis/liblwgeom/liblwgeom.h))
+  POSTGIS_SRC := $(patsubst %/liblwgeom/liblwgeom.h,%,$(firstword $(H9_GIS_HITS)))
+  ifneq ($(POSTGIS_SRC),)
+    $(info postgis_hex9: found PostGIS source at $(POSTGIS_SRC)$(if $(H9_GIS_VER), (server runs $(H9_GIS_VER))))
+  endif
+endif
 PG_CPPFLAGS  = \
     -I$(POSTGIS_SRC)/liblwgeom \
     -I$(POSTGIS_SRC)/libpgcommon \
@@ -103,10 +140,41 @@ endif
 # H9_GIT_REV stamps every build so h9_version() can be matched against the
 # loaded dylib (`-dirty` suffix when working tree has uncommitted edits).
 H9_GIT_REV := $(shell git -C "$(CURDIR)" describe --always --dirty 2>/dev/null || echo unknown)
+# Single source of truth for the extension version: the control file. Keeps
+# h9_version() from drifting (it reported "1.2.0" for three releases).
+H9_EXT_VERSION := $(shell sed -n "s/^default_version[ 	]*=[ 	]*'\(.*\)'/\1/p" $(CURDIR)/postgis_hex9.control)
 H9_CXXFLAGS = $(CFLAGS) -std=c++17 -fno-exceptions $(CPPFLAGS) $(PG_CPPFLAGS) \
-              -DH9_GIT_REV='"$(H9_GIT_REV)"' -MMD -MP
-build/%.o: %.cpp | build
+              -DH9_GIT_REV='"$(H9_GIT_REV)"' \
+              -DH9_EXT_VERSION='"$(H9_EXT_VERSION)"' -MMD -MP
+build/%.o: %.cpp | build check-postgis-src
 	$(CXX) $(H9_CXXFLAGS) -c -o $@ $<
+
+# Named prerequisite of compilation only, so `make clean` still works with
+# POSTGIS_SRC unset.
+.PHONY: check-postgis-src
+check-postgis-src:
+	@if [ -z "$(POSTGIS_SRC)" ] || [ ! -f "$(POSTGIS_SRC)/liblwgeom/liblwgeom.h" ]; then \
+	  echo "postgis_hex9: POSTGIS_SRC is not set to a PostGIS source tree."; \
+	  echo ""; \
+	  echo "  liblwgeom's headers are not shipped by any PostGIS package, so this"; \
+	  echo "  extension must be built against an unpacked PostGIS SOURCE tree."; \
+	  echo ""; \
+	  echo "  Either set the environment variable:"; \
+	  echo "      POSTGIS_SRC=/path/to/postgis-source make"; \
+	  echo "  or pass it to make:"; \
+	  echo "      make POSTGIS_SRC=/path/to/postgis-source"; \
+	  echo "  or pin it once in Makefile.local (gitignored):"; \
+	  echo "      echo 'POSTGIS_SRC = /path/to/postgis-source' >> Makefile.local"; \
+	  echo ""; \
+	  if [ -n "$(POSTGIS_SRC)" ]; then \
+	    echo "  (tried \"$(POSTGIS_SRC)\" — no liblwgeom/liblwgeom.h there)"; \
+	  fi; \
+	  echo "  It must match the MINOR version of the PostGIS your server loaded"; \
+	  echo "  (SELECT postgis_lib_version();) — struct layouts change between"; \
+	  echo "  minor releases and this module resolves them by dlsym, so a"; \
+	  echo "  mismatch corrupts memory rather than failing to load."; \
+	  exit 1; \
+	fi
 
 # Header dependency tracking: -MMD -MP emits build/*.d listing each object's
 # header prerequisites, so editing a header (e.g. h9_lwgeom_shim.h) triggers a
@@ -127,12 +195,78 @@ clean-build:
 # portable across installations, and the same mechanism the shipped upgrade
 # scripts rely on. (An absolute build-time path here once made the regression
 # suite silently load a stale dylib from another PostgreSQL.)
-postgis_hex9--1.5.0.sql: hex9.sql.in
+postgis_hex9--2.0.0.sql: hex9.sql.in
 	cp $< $@
 
-all: postgis_hex9--1.5.0.sql
+all: postgis_hex9--2.0.0.sql
 
 clean: clean-hex9-generated
 .PHONY: clean-hex9-generated
 clean-hex9-generated:
-	rm -f postgis_hex9--1.5.0.sql
+	rm -f postgis_hex9--2.0.0.sql
+
+# ── Which PostgreSQL, and which PostGIS? ─────────────────────────────────────
+# macOS routinely has two PostgreSQL installs: a Homebrew/`/usr/local` one that
+# owns the `pg_config` on PATH — and therefore the headers and libs dev work
+# reaches for — and a Postgres.app one that is usually the server actually
+# running. Build against the first and install, and everything SUCCEEDS: the
+# files land in a prefix the live server never reads, so you go on testing a
+# stale module. Same silent-mismatch family as loading a superseded libhex9.
+#
+# PostGIS is a third: liblwgeom headers are not installed by packagers, so
+# POSTGIS_SRC points at an unpacked source tree that nothing keeps in step with
+# the PostGIS the server loaded. Within a patch release the structs are stable;
+# across a minor release LWGEOM/GSERIALIZED layout changes would corrupt memory
+# rather than fail cleanly — and because the module resolves liblwgeom by dlsym
+# (h9_lwgeom_shim.h), there is no link-time check to catch it.
+#
+# So: ask the RUNNING server what it actually uses, and compare. Skipped
+# silently when no server is reachable (a build need not have one).
+PSQL ?= psql
+
+.PHONY: check-pg-match
+check-pg-match:
+	@srv_lib=`$(PSQL) -X -tA -c "SELECT setting FROM pg_config() WHERE name='PKGLIBDIR'" postgres 2>/dev/null`; \
+	if [ -z "$$srv_lib" ]; then \
+	  echo "postgis_hex9: no reachable server — skipping install-target check."; \
+	else \
+	  our_lib=`$(PG_CONFIG) --pkglibdir`; \
+	  if [ "$$srv_lib" != "$$our_lib" ]; then \
+	    echo "postgis_hex9: ERROR — PG_CONFIG points at a different PostgreSQL"; \
+	    echo "    this build installs to : $$our_lib"; \
+	    echo "    running server loads from: $$srv_lib"; \
+	    echo "  Installing here would succeed and change nothing the server sees."; \
+	    echo "  Rebuild with the server's own pg_config, e.g.:"; \
+	    echo "      make PG_CONFIG=`$(PSQL) -X -tA -c \"SELECT setting FROM pg_config() WHERE name='BINDIR'\" postgres 2>/dev/null`/pg_config"; \
+	    exit 1; \
+	  fi; \
+	  srv_gis=""; \
+	  for db in postgres contrib_regression template1; do \
+	    srv_gis=`$(PSQL) -X -tA -c "SELECT postgis_lib_version()" $$db 2>/dev/null`; \
+	    [ -n "$$srv_gis" ] && break; \
+	  done; \
+	  src_gis=`sed -n 's/^#define POSTGIS_LIB_VERSION "\(.*\)"/\1/p' $(POSTGIS_SRC)/postgis_config.h 2>/dev/null`; \
+	  if [ -z "$$src_gis" ]; then \
+	    echo "postgis_hex9: WARNING — cannot read POSTGIS_LIB_VERSION from"; \
+	    echo "    $(POSTGIS_SRC)/postgis_config.h"; \
+	    echo "  POSTGIS_SRC may be wrong or unconfigured; header/runtime match UNVERIFIED."; \
+	  elif [ -z "$$srv_gis" ]; then \
+	    echo "postgis_hex9: WARNING — no database found with PostGIS installed;"; \
+	    echo "  cannot verify POSTGIS_SRC ($$src_gis) against the server. UNVERIFIED."; \
+	  elif [ "$$srv_gis" != "$$src_gis" ]; then \
+	    srv_mm=`echo $$srv_gis | cut -d. -f1,2`; src_mm=`echo $$src_gis | cut -d. -f1,2`; \
+	    if [ "$$srv_mm" != "$$src_mm" ]; then \
+	      echo "postgis_hex9: ERROR — POSTGIS_SRC is a different MINOR release"; \
+	      echo "    headers : $$src_gis  ($(POSTGIS_SRC))"; \
+	      echo "    server  : $$srv_gis"; \
+	      echo "  liblwgeom structs are not stable across minor releases and this"; \
+	      echo "  module resolves them by dlsym, so a mismatch corrupts memory"; \
+	      echo "  rather than failing to load. Point POSTGIS_SRC at $$srv_gis source."; \
+	      exit 1; \
+	    fi; \
+	    echo "postgis_hex9: NOTE — POSTGIS_SRC $$src_gis vs server $$srv_gis"; \
+	    echo "  (patch-level difference; struct layouts are stable within $$srv_mm)"; \
+	  fi; \
+	fi
+
+installcheck: check-pg-match

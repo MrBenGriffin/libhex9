@@ -7,8 +7,16 @@ generators live alongside the artifacts they produce.
 
 **Status: staged for review.** Not yet wired into the build. They require a
 Python environment with the `hhg9` package on the path (and `scipy`/`numpy`) —
-they import `hhg9.h9.*` and operate on `WGS84_l5_warp_data.npz`. They are *dev /
-regeneration* tools, not part of the C/C++ library or its runtime.
+they import `hhg9.h9.*`. They are *dev / regeneration* tools, not part of the
+C/C++ library or its runtime.
+
+> **2.0.0 — the WGS84 regime producers moved to [`legacy/`](legacy/).**
+> `export_warp_v3.py`, `export_warp_grads.py`, `export_warp_deltas.py`,
+> `export_ct_*.py`, `export_warp_test_vecs.py`, `warp_tidy.py` and the F6 port
+> brief all served the WGS84-trained field, which 2.0.0 removed. They are kept
+> as the method record for producing a trained field, not as live tooling. The
+> live producer is `export_warp_fund_v4.py` (Sphere-L6 v4 fund wedge).
+> The v3 pipeline documented further down this file is therefore **historical**.
 
 ## Why these were brought over (and the diagnostics were not)
 

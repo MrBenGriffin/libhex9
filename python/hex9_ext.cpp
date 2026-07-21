@@ -400,9 +400,6 @@ NB_MODULE(hex9_ext, m) {
     m.def("warp_init", &warp_init,
           "Rebuild the authalic-warp state. Done automatically at import; only "
           "needed again after a failed init.");
-    m.def("set_use_warp", [](bool on) { hex9_set_use_warp(on ? 1 : 0); }, nb::arg("on"),
-          "Toggle the authalic warp. ON by default at import; set False only to "
-          "inspect the raw (non-equal-area) lattice.");
     m.def("set_encoder",  [](int mode) { hex9_set_encoder(mode); }, nb::arg("mode"));
     m.def("encode", &encode, nb::arg("lon"), nb::arg("lat"),
           "Encode lon/lat arrays to an (n,16) uint8 array of cell UUIDs.");
@@ -500,7 +497,5 @@ NB_MODULE(hex9_ext, m) {
     // the RAW un-warped lattice, which is NOT equal-area (~7% cell-area spread) —
     // the warp is hex9's equal-area mechanism. Raising here (rather than silently
     // serving raw cells) surfaces a missing/corrupt warp blob at import time.
-    // Callers wanting the raw grid can still hex9_ext.set_use_warp(False).
     warp_init();
-    hex9_set_use_warp(1);
 }

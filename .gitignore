@@ -17,15 +17,21 @@ config.log
 config.guess
 config.sub
 config.status
-test_data/
 .deps/
-docs/
 doc/html/*.html
 doc/html/docbook.css
 doc/Makefile
 doc/Makefile.comments
 doc/**.xsl.xml
-test_data/
+
+# test_data/ holds BOTH the reference goldens the suite needs (~1.2 MB, tracked:
+# via_sphere_ref.bin, fund_warp_ref.bin, pole_seam_ref.bin, regime_pin*.tsv) and
+# large LiDAR sample inputs (~730 MB, not distributable). Ignore only the latter
+# — a blanket test_data/ silently excluded the goldens, so test/via_sphere,
+# test/fund_warp, test/pole_seam and test/regime_pin all failed on a fresh clone.
+test_data/*.laz
+test_data/*.las
+test_data/2015-*/
 
 # MacOS
 .DS_Store
@@ -38,3 +44,4 @@ test_data/
 tools/_*
                                                                                                                 
 build-*/
+Makefile.local
