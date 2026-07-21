@@ -148,6 +148,18 @@ if (HEX9_PDAL)
   add_subdirectory(pdal)
 endif()
 
+# ── DuckDB extension (opt-in) ────────────────────────────────────────────────
+# duckdb/ is a self-contained extension-template tree (its own Makefile drives
+# DuckDB's build, so it is NOT an add_subdirectory — see duckdb/README.md for
+# the one-time clones it needs). This target is a thin driver over that flow.
+option(HEX9_DUCKDB "Build the DuckDB h9 extension (drives duckdb/Makefile)" OFF)
+if (HEX9_DUCKDB)
+  add_custom_target(duckdb_h9 ALL
+    COMMAND ${CMAKE_COMMAND} -E env GEN=ninja make -C ${CMAKE_SOURCE_DIR}/duckdb release
+    COMMENT "Building DuckDB h9 extension via duckdb/Makefile (extension-template flow)"
+    VERBATIM)
+endif()
+
 add_executable(smoke test/smoke.c)
 target_link_libraries(smoke PRIVATE hex9)
 add_test(NAME smoke COMMAND smoke)

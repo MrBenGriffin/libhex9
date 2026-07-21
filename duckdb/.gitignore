@@ -1,0 +1,6 @@
+# Cloned build dependencies (see README.md) — not submodules.
+/duckdb/
+/extension-ci-tools/
+/build/
+/testext/
+/configure/

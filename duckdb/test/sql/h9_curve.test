@@ -1,0 +1,85 @@
+# name: test/sql/h9_curve.test
+# description: hex9 Hamiltonian curve — pin, round trips, HUGEINT index
+# group: [h9]
+
+require h9
+
+# Regime pin: curve of the edinburgh anchor (test_data/regime_pin.tsv)
+query I
+SELECT h9_curve(h9_encode(-3.19, 55.95));
+----
+c1142537-0436-1288-6887-584815842403
+
+query I
+SELECT h9_is_curve(h9_curve(h9_encode(-3.19, 55.95)))
+   AND NOT h9_is_curve(h9_encode(-3.19, 55.95));
+----
+true
+
+query I
+SELECT h9_curve_layer(h9_curve(h9_encode(-3.19, 55.95)));
+----
+30
+
+# Constructive inverse: curve -> canonical bin at the curve's layer
+query I
+SELECT h9_curve_decode(h9_curve(h9_encode(-3.19, 55.95))) = h9_bin(h9_encode(-3.19, 55.95), 30);
+----
+true
+
+# Prefix truncation is exact on the curve tree
+query I
+SELECT h9_curve_layer(h9_curve_bin(h9_curve(h9_encode(-3.19, 55.95)), 8)) = 8;
+----
+true
+
+# HUGEINT index round trip via pack
+query I
+SELECT h9_curve_pack(h9_curve_index(h9_curve(h9_encode(-3.19, 55.95))), 30) = h9_curve(h9_encode(-3.19, 55.95));
+----
+true
+
+# Index at L30 exceeds int64 (12*9^30-1) but fits HUGEINT
+query I
+SELECT h9_curve_index(h9_curve(h9_encode(-3.19, 55.95))) > 9223372036854775807;
+----
+true
+
+# Label round trip
+query I
+SELECT h9_curve_from_label(h9_curve_label(h9_curve(h9_encode(-3.19, 55.95)))) = h9_curve(h9_encode(-3.19, 55.95));
+----
+true
+
+# Leading-zero-adjacent case: a small index at a coarse layer. The index value
+# alone does not carry the layer (rank width) — h9_curve_pack re-pads from the
+# layer argument, so low-index round trips are exact.
+query I
+SELECT h9_curve_pack(h9_curve_index(h9_curve_bin(h9_curve(h9_encode(0, 0)), 1)), 1)
+     = h9_curve_bin(h9_curve(h9_encode(0, 0)), 1);
+----
+true
+
+query I
+SELECT h9_curve_index(h9_curve_bin(h9_curve(h9_encode(0, 0)), 1)) < 12 * 9;
+----
+true
+
+# Refinement: a cell's children occupy curve indices index*9 .. index*9+8
+query I
+SELECT h9_curve_index(h9_curve_bin(h9_curve(h9_encode(-3.19, 55.95)), 9))
+     = h9_curve_index(h9_curve_bin(h9_curve(h9_encode(-3.19, 55.95)), 8)) * 9
+     + (h9_curve_index(h9_curve_bin(h9_curve(h9_encode(-3.19, 55.95)), 9)) % 9);
+----
+true
+
+# Constructive inverse works at any truncated layer, and agrees with h9_bin
+query I
+SELECT h9_curve_decode(h9_curve_bin(h9_curve(h9_encode(-3.19, 55.95)), 8)) = h9_bin(h9_encode(-3.19, 55.95), 8);
+----
+true
+
+statement error
+SELECT h9_curve_pack(999999999999, 5);
+----
+out of range

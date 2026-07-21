@@ -1,0 +1,33 @@
+# name: test/sql/h9_doctrine.test
+# description: addressing-doctrine guards — bins are layer keys, not addresses
+# group: [h9]
+
+require h9
+
+# Adjacency rejects bin input (docs/addressing-doctrine.md; mirrors postgis_hex9)
+statement error
+SELECT h9_neighbors(h9_bin(h9_encode(-3.19, 55.95), 8), 8);
+----
+bin UUIDs are layer keys
+
+statement error
+SELECT h9_kring(h9_bin(h9_encode(-3.19, 55.95), 8), 8, 1);
+----
+bin UUIDs are layer keys
+
+statement error
+SELECT h9_kdisk(h9_bin(h9_encode(-3.19, 55.95), 8), 8, 1);
+----
+bin UUIDs are layer keys
+
+# Lineage ops are DEFINED on bins (cell-level relations) — must NOT be guarded
+query I
+SELECT h9_cell_parent(h9_bin(h9_encode(-3.19, 55.95), 8)) IS NOT NULL;
+----
+true
+
+# h9_bin from a full uuid at every layer is the guaranteed re-bin path
+query I
+SELECT h9_bin(h9_encode(-3.19, 55.95), 4) = h9_cell_ancestor(h9_bin(h9_encode(-3.19, 55.95), 4), 4);
+----
+true

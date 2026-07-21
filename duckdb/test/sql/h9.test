@@ -1,0 +1,188 @@
+# name: test/sql/h9.test
+# description: hex9 core addressing — regime pins, round trips, WKB, doctrine-adjacent structure
+# group: [h9]
+
+require h9
+
+# hex9_version() is "libhex9 <ver> (<build date>)" — pin the version token only
+query I
+SELECT h9_version() LIKE 'libhex9 2.0.0 (%';
+----
+true
+
+query I
+SELECT h9_lmax();
+----
+30
+
+# ── Regime pins (test_data/regime_pin.tsv — a diff here means the projection changed) ──
+
+query I
+SELECT h9_encode(-3.19, 55.95);
+----
+43217747-8783-8615-6377-686620685721
+
+query I
+SELECT h9_encode(-0.1276, 51.5072);
+----
+43587853-0705-2351-7164-468376521701
+
+query I
+SELECT h9_encode(0, 0);
+----
+02222222-2222-2222-2222-222222222220
+
+query I
+SELECT h9_encode(0, 90);
+----
+42222222-2222-2222-2222-222222222222
+
+query I
+SELECT h9_encode(0, -90);
+----
+a2222222-2222-2222-2222-222222222222
+
+query I
+SELECT h9_encode(0, 89.9999);
+----
+42222222-2222-2333-6832-323233223322
+
+query I
+SELECT h9_encode(90, 45);
+----
+53333323-3233-4222-8333-326282682224
+
+# ── Round trips ──
+
+query I
+SELECT abs((h9_decode(h9_encode(-3.19, 55.95))).lon - -3.19) < 1e-6
+   AND abs((h9_decode(h9_encode(-3.19, 55.95))).lat - 55.95) < 1e-6;
+----
+true
+
+# Pole and antimeridian seam: decode must land back on the input (lat exact at
+# the pole; lon is degenerate there, so only lat is asserted).
+query I
+SELECT abs((h9_decode(h9_encode(0, 90))).lat - 90) < 1e-6;
+----
+true
+
+query I
+SELECT abs(abs((h9_decode(h9_encode(180, 51.5))).lon) - 180) < 1e-5
+   AND abs((h9_decode(h9_encode(180, 51.5))).lat - 51.5) < 1e-5;
+----
+true
+
+query I
+SELECT h9_parse_label(h9_label_key(h9_encode(-3.19, 55.95), 8)) = h9_bin(h9_encode(-3.19, 55.95), 8);
+----
+true
+
+# ── Lineage / structure ──
+
+query I
+SELECT len(h9_cell_children(h9_bin(h9_encode(-3.19, 55.95), 8))) = 9;
+----
+true
+
+query I
+SELECT h9_cell_parent(h9_bin(h9_encode(-3.19, 55.95), 8)) = h9_cell_ancestor(h9_bin(h9_encode(-3.19, 55.95), 8), 7);
+----
+true
+
+query I
+SELECT (h9_common_ancestor([h9_encode(-3.19, 55.95)], 8)).layer = 8;
+----
+true
+
+query I
+SELECT (h9_common_ancestor([h9_encode(-3.19, 55.95), h9_encode(-0.1276, 51.5072)], 8)).layer BETWEEN 0 AND 8;
+----
+true
+
+# ── Adjacency ──
+
+query I
+SELECT len(h9_neighbors(h9_encode(-3.19, 55.95), 8)) = 6;
+----
+true
+
+query I
+SELECT len(h9_kring(h9_encode(-3.19, 55.95), 8, 0)) = 1;
+----
+true
+
+query I
+SELECT len(h9_kdisk(h9_encode(-3.19, 55.95), 8, 1)) = 7;
+----
+true
+
+# ── WKB shapes ──
+
+query I
+SELECT octet_length(h9_decode_wkb(h9_encode(-3.19, 55.95)));
+----
+21
+
+# polygon: 13-byte header + 7 points (6*3^0+1) * 16 bytes
+query I
+SELECT octet_length(h9_cell(h9_encode(-3.19, 55.95), 8));
+----
+125
+
+# densify=1: 19 points
+query I
+SELECT octet_length(h9_cell(h9_encode(-3.19, 55.95), 8, 1));
+----
+317
+
+# ── UUID <-> UHUGEINT reinterpretation ──
+
+query I
+SELECT h9_id_from_int(h9_id_int(h9_encode(-3.19, 55.95))) = h9_encode(-3.19, 55.95);
+----
+true
+
+query I
+SELECT h9_id_from_int(h9_id_int(h9_bin(h9_encode(-3.19, 55.95), 8))) = h9_bin(h9_encode(-3.19, 55.95), 8);
+----
+true
+
+# curve uuids (0xC nibble 0) sort after all h9 addresses, in uuid and integer form alike
+query I
+SELECT h9_id_int(h9_curve(h9_encode(-3.19, 55.95))) > h9_id_int(h9_encode(-3.19, 55.95));
+----
+true
+
+# Leading zeros are load-bearing in hex9 digit strings. The integer forms are
+# safe only because they are value-semantic: h9_id_from_int always writes all
+# 16 bytes back, so null-island's leading 0x0 root nibble survives the round
+# trip even though the integer has no leading-zero digits.
+query I
+SELECT h9_id_from_int(h9_id_int(h9_encode(0, 0))) = h9_encode(0, 0);
+----
+true
+
+query I
+SELECT h9_id_from_int(h9_id_int(h9_encode(0, 90))) = h9_encode(0, 90);
+----
+true
+
+# ── NULL propagation ──
+
+query I
+SELECT h9_encode(NULL, 55.95) IS NULL AND h9_decode(NULL) IS NULL AND h9_bin(NULL, 8) IS NULL;
+----
+true
+
+# ── Errors ──
+
+statement error
+SELECT h9_cell(h9_encode(-3.19, 55.95), 0);
+----
+layer must be 1..
+
+statement error
+SELECT h9_bin(h9_encode(-3.19, 55.95), 31);
+----
+layer must be 0..
