@@ -24,9 +24,28 @@ set(EXTENSION_SOURCES
     src/h9_extension.cpp
     src/h9_scalar.cpp
     src/h9_curve.cpp
+    src/h9_table.cpp
     "${HEX9_ROOT}/hex9_c.cpp"
     "${HEX9_ROOT}/core/h9_warp_runtime.cpp"
     "${HEX9_ROOT}/core/h9_warp_embedded.cpp")
+
+# Emscripten's wasm backend rejects the core's `.incbin` inline asm; swap in a
+# generated string-literal TU carrying the same h9:: symbols.
+if(EMSCRIPTEN)
+  set(H9_WARP_EMBED_TU "${CMAKE_CURRENT_BINARY_DIR}/h9_warp_embedded_wasm.cpp")
+  if(NOT EXISTS "${H9_WARP_EMBED_TU}")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/scripts/gen_warp_embed.py"
+              "${H9_WARP_BLOB_PATH}" "${H9_WARP_EMBED_TU}"
+      RESULT_VARIABLE H9_EMBED_RC)
+    if(NOT H9_EMBED_RC EQUAL 0)
+      message(FATAL_ERROR "hex9: gen_warp_embed.py failed (${H9_EMBED_RC})")
+    endif()
+  endif()
+  list(REMOVE_ITEM EXTENSION_SOURCES "${HEX9_ROOT}/core/h9_warp_embedded.cpp")
+  list(APPEND EXTENSION_SOURCES "${H9_WARP_EMBED_TU}")
+endif()
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

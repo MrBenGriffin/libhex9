@@ -25,6 +25,7 @@ namespace duckdb {
 
 void RegisterH9Scalar(ExtensionLoader &loader);
 void RegisterH9Curve(ExtensionLoader &loader);
+void RegisterH9Table(ExtensionLoader &loader);
 
 static void LoadInternal(ExtensionLoader &loader) {
 	char errbuf[256] = {0};
@@ -49,6 +50,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	}
 	RegisterH9Scalar(loader);
 	RegisterH9Curve(loader);
+	RegisterH9Table(loader);
 }
 
 void H9Extension::Load(ExtensionLoader &loader) {

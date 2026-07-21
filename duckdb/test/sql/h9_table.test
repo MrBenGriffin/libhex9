@@ -1,0 +1,81 @@
+# name: test/sql/h9_table.test
+# description: set-returning surface — h9_grid, h9_curve_cells, h9_owned_cells
+# group: [h9]
+
+require h9
+
+# ── h9_grid ──
+# Bin-keyed-geometry-by-JOIN guarantee: the enumerated h9_bin IS h9_bin(h9_id, layer)
+query I
+SELECT bool_and(h9_bin = h9_bin(h9_id, 6)) AND count(*) > 10
+FROM h9_grid(-4.0, 55.0, -3.0, 56.0, 6);
+----
+true
+
+# Cross-layer join-key coherence: re-binning the full h9_id to layer 4 lands on
+# bins a layer-4 grid over a (generously larger) bbox also enumerates.
+query I
+SELECT bool_and(b IN (SELECT h9_bin FROM h9_grid(-10.0, 50.0, 3.0, 61.0, 4)))
+FROM (SELECT h9_bin(h9_id, 4) AS b FROM h9_grid(-4.0, 55.0, -3.0, 56.0, 6));
+----
+true
+
+# Lineage/ownership vs point re-binning DIVERGE beyond one generation on
+# band cells (hex9_c.h "Lineage vs ownership") — pin that the divergence
+# exists, so a silent structural change would surface here.
+query I
+SELECT sum(CASE WHEN h9_bin(h9_id, 4) = h9_cell_ancestor(h9_bin, 4) THEN 0 ELSE 1 END) > 0
+FROM h9_grid(-4.0, 55.0, -3.0, 56.0, 6);
+----
+true
+
+# WKB shapes: geom is a 7-point polygon (densify 0), centroid a 21-byte point
+query I
+SELECT bool_and(octet_length(geom) = 125) AND bool_and(octet_length(centroid) = 21)
+FROM h9_grid(-4.0, 55.0, -3.0, 56.0, 6);
+----
+true
+
+# densify named parameter
+query I
+SELECT bool_and(octet_length(geom) = 317)
+FROM h9_grid(-4.0, 55.0, -3.0, 56.0, 6, densify := 1);
+----
+true
+
+# max_cells cap: the globe at layer 8 exceeds the default 708588
+statement error
+SELECT count(*) FROM h9_grid(-180.0, -90.0, 180.0, 90.0, 8);
+----
+
+# ── h9_curve_cells / h9_owned_cells ──
+
+# Exactly 9^2 lineage descendants two layers down, emitted in curve order
+query I
+SELECT count(*) = 81
+   AND bool_and(h9_is_curve(h9_curve))
+   AND count(DISTINCT h9_bin) = 81
+FROM h9_curve_cells(h9_bin(h9_encode(-3.19, 55.95), 8), 10);
+----
+true
+
+# Emit order is ascending curve order
+query I
+SELECT list(h9_curve) = list(h9_curve ORDER BY h9_curve)
+FROM h9_curve_cells(h9_bin(h9_encode(-3.19, 55.95), 8), 10);
+----
+true
+
+# Owned sub-zones: also exactly 9^d, every one folding back to the zone
+query I
+SELECT count(*) = 81
+   AND bool_and(h9_cell_ancestor(h9_bin, 8) = h9_bin(h9_encode(-3.19, 55.95), 8))
+FROM h9_owned_cells(h9_bin(h9_encode(-3.19, 55.95), 8), 10);
+----
+true
+
+# max_cells guard
+statement error
+SELECT count(*) FROM h9_curve_cells(h9_bin(h9_encode(-3.19, 55.95), 2), 12);
+----
+exceeds max_cells
