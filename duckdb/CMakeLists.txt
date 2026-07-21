@@ -29,10 +29,17 @@ set(EXTENSION_SOURCES
     "${HEX9_ROOT}/core/h9_warp_runtime.cpp"
     "${HEX9_ROOT}/core/h9_warp_embedded.cpp")
 
-# Emscripten's wasm backend rejects the core's `.incbin` inline asm; swap in a
-# generated string-literal TU carrying the same h9:: symbols.
-if(EMSCRIPTEN)
-  set(H9_WARP_EMBED_TU "${CMAKE_CURRENT_BINARY_DIR}/h9_warp_embedded_wasm.cpp")
+# The core's `.incbin` inline asm doesn't survive every toolchain: Emscripten's
+# wasm backend rejects it, and MSVC x64 has no __asm__ at all. Swap in a
+# generated TU carrying the same h9:: symbols (array style for MSVC, whose
+# string literals cap at 64 KB).
+if(EMSCRIPTEN OR MSVC)
+  set(H9_WARP_EMBED_TU "${CMAKE_CURRENT_BINARY_DIR}/h9_warp_embedded_gen.cpp")
+  if(MSVC)
+    set(H9_EMBED_STYLE "--array")
+  else()
+    set(H9_EMBED_STYLE "")
+  endif()
   if(NOT EXISTS "${H9_WARP_EMBED_TU}")
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     execute_process(
@@ -51,8 +58,10 @@ build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
 foreach(tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
+  # _USE_MATH_DEFINES: MSVC/mingw hide M_PI without it (no-op elsewhere).
   target_compile_definitions(${tgt} PRIVATE
-    H9_WARP_BLOB="${H9_WARP_BLOB_PATH}")
+    H9_WARP_BLOB="${H9_WARP_BLOB_PATH}"
+    _USE_MATH_DEFINES)
   set_target_properties(${tgt} PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON)
