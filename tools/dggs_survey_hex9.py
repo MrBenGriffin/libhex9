@@ -7,8 +7,9 @@ aspect ratio with `skar`, then report the per-system distribution and the
 best/worst cell.
 
 hex9 is the point of this script and is always surveyed (finest = layer 29).
-H3 / S2 / A5 are surveyed too *if* importable, so the numbers sit alongside the
-notebook's three reference systems. `skar` is required (it is the solver).
+H3 / S2 / A5 / ISEA3H (dggal) / HEALPix (healpy) are surveyed too *if*
+importable, so the numbers sit alongside the notebook's three reference
+systems. `skar` is required (it is the solver).
 
 Run from the repo root after building the python ext:
     PYTHONPATH=build python3 tools/dggs_survey_hex9.py
@@ -25,13 +26,10 @@ try:
 except ImportError:
     sys.exit("hex9_ext not importable — build it and run with PYTHONPATH=build")
 
-# CRITICAL: enable the authalic warp. It is OFF by default; without it, cell()
-# returns the RAW (un-warped) lattice — the very thing the warp exists to correct.
-# Measuring raw cells gives a bogus area CV of ~7.4% (max/min ~1.4); with the warp
-# on, hex9 is equal-area to MAE ~0.001% (area CV ~0.12%). Aspect ratio is
-# warp-independent (~1.37 either way), but area is meaningless without it.
-hex9.warp_init()
-hex9.set_use_warp(True)
+# The authalic warp is now enabled at import (hex9_ext raises there if the warp
+# blob is missing/corrupt), so no explicit warp_init()/set_use_warp() is needed —
+# the old opt-in binding produced a retracted raw-lattice CV of ~7.4%. cell()
+# always returns warped (equal-area) geometry.
 
 # Optional reference systems (mirror the notebook when present).
 try:
@@ -46,6 +44,19 @@ try:
     import a5_fast as a5
 except ImportError:
     a5 = None
+try:
+    # NOTE: healpy must be imported AFTER hex9_ext — healpy's native libs
+    # segfault libhex9 when they load first (not an OpenMP duplicate issue).
+    import healpy as hp
+except ImportError:
+    hp = None
+try:
+    from dggal import *                                     # noqa: F403
+    _dggal_app = Application(appGlobals=globals())           # noqa: F405
+    pydggal_setup(_dggal_app)                                # noqa: F405
+    _ISEA3H = ISEA3H()                                       # noqa: F405
+except ImportError:
+    _ISEA3H = None
 
 # ── config ────────────────────────────────────────────────────────────────
 N = 5000
@@ -65,6 +76,13 @@ H3_RES = 15          # h3 supports 0..15
 S2_LEVEL = 30        # s2sphere supports 0..30
 A5_RES = 20          # a5 supports 0..30 (r30 floors area; see above)
 HEX9_LAYER = 15      # hex9 supports 0..29 (L29 unsurveyable; see above)
+ISEA3H_LEVEL = 20    # dggal supports 0..33; L20 cells ~1.5e4 m², well clear of
+                     # any float floor (refined boundary coords are degrees)
+HEALPIX_LOG2 = 15    # nside = 2^15; healpy nested max is 2^29, but boundary
+                     # step-points at that depth collapse in float64 like hex9 L29
+HEALPIX_STEP = 12    # boundary points per edge (48/cell): HEALPix edges are not
+                     # geodesics (constant-z / spiral arcs), corners alone misstate
+                     # both area and the enclosing cone
 
 SYS_LABEL = {}       # filled from the resolutions in main()
 PCTL = (50, 90, 95)  # authalicity percentiles, reported as ratio to mean area
@@ -103,6 +121,49 @@ try:
     _GEOD = Geod(ellps='WGS84')          # geographiclib-backed geodesic areas
 except ImportError:
     _GEOD = None
+
+# Systems whose *native* addressing surface is the WGS84 authalic sphere: each
+# converts geodetic latitude to authalic latitude internally and does its
+# equal-area work on that sphere (hex9 ≥2.0.0: analytic series + Sphere-trained
+# warp, one regime, see libhex9 docs/warp-regimes.md; dggal's ISEA3H: Snyder on
+# the authalic sphere, cf. its public latGeodeticToAuthalic; A5: same design).
+# For these, "spherical CV" via re-reading geodetic lat as spherical is a datum
+# MISMATCH, not grid distortion — the native-sphere column below measures each
+# on the sphere the grid actually addresses. H3/S2/HEALPix take the coordinate
+# sphere directly (identity).
+AUTHALIC_NATIVE = frozenset({'a5', 'isea3h', 'hex9'})
+
+_E2 = 0.00669437999014133                # WGS84 first eccentricity squared
+
+
+def _lat_geodetic_to_authalic(lat_deg):
+    """Exact authalic latitude (degrees), closed-form q-function — verified
+    against dggal's latGeodeticToAuthalic series to <1e-11 degrees."""
+    e = np.sqrt(_E2)
+
+    def q(s):
+        return (1 - _E2) * (s / (1 - _E2 * s * s)
+                            - (0.5 / e) * np.log((1 - e * s) / (1 + e * s)))
+
+    s = np.sin(np.radians(lat_deg))
+    return np.degrees(np.arcsin(np.clip(q(s) / q(1.0), -1.0, 1.0)))
+
+
+def cell_area_native_sphere(verts, authalic):
+    """Cell area (m²) on the system's native sphere. For authalic-native grids
+    the boundary's geodetic latitudes are mapped to authalic latitudes first —
+    the sphere their equal-area machinery addresses; otherwise identical to the
+    plain spherical chord area."""
+    if not authalic:
+        return cell_area_m2(verts)
+    v = np.asarray(verts, float)
+    lon = np.arctan2(v[:, 1], v[:, 0])
+    lat = np.radians(_lat_geodetic_to_authalic(
+        np.degrees(np.arcsin(np.clip(v[:, 2], -1.0, 1.0)))))
+    w = np.column_stack([np.cos(lat) * np.cos(lon),
+                         np.cos(lat) * np.sin(lon),
+                         np.sin(lat)])
+    return cell_area_m2(w)
 
 
 def cell_area_wgs84(verts):
@@ -191,9 +252,49 @@ def iter_hex9(n, seed):
         yield cid.hex(), skar.to_vec3(latlng, geo='latlng_deg')
 
 
-ITERATORS = {'h3': iter_h3, 's2': iter_s2, 'a5': iter_a5, 'hex9': iter_hex9}
+def iter_isea3h(n, seed):
+    """ISEA3H zones via DGGAL: encode, dedupe on the text id, yield the zone's
+    *refined* WGS84 boundary. Refined (not corner) vertices matter: ISEA edges
+    are straight in the Snyder projection plane, so on the sphere they are
+    curved — corners alone understate the area and the enclosing cone.
+    Vertex count varies per zone (~30–60)."""
+    rng = np.random.default_rng(seed)
+    seen = set()
+    for lon, lat in sample_uniform_lonlat(n, rng):
+        z = _ISEA3H.getZoneFromWGS84Centroid(
+            ISEA3H_LEVEL, GeoPoint(Degrees(float(lat)), Degrees(float(lon))))  # noqa: F405
+        zid = _ISEA3H.getZoneTextID(z)
+        if zid in seen:
+            continue
+        seen.add(zid)
+        latlng = [(float(p.lat), float(p.lon))
+                  for p in _ISEA3H.getZoneRefinedWGS84Vertices(z, 0)]
+        yield zid, skar.to_vec3(latlng, geo='latlng_deg')
+
+
+def iter_healpix(n, seed):
+    """HEALPix (nested) pixels via healpy: boundaries() already returns unit
+    vec3 columns ordered around the ring, so no lat/lng round-trip is needed.
+    Angles are read as geodetic lon/lat like every other system (common datum);
+    HEALPix itself is equal-area on the sphere by construction."""
+    rng = np.random.default_rng(seed)
+    nside = 2 ** HEALPIX_LOG2
+    pts = sample_uniform_lonlat(n, rng)
+    pix = hp.ang2pix(nside, pts[:, 0], pts[:, 1], nest=True, lonlat=True)
+    seen = set()
+    for p in pix:
+        p = int(p)
+        if p in seen:
+            continue
+        seen.add(p)
+        yield p, hp.boundaries(nside, p, step=HEALPIX_STEP, nest=True).T
+
+
+ITERATORS = {'h3': iter_h3, 's2': iter_s2, 'a5': iter_a5,
+             'isea3h': iter_isea3h, 'healpix': iter_healpix, 'hex9': iter_hex9}
 AVAILABLE = (['h3'] if h3 else []) + (['s2'] if s2sphere else []) + \
-            (['a5'] if a5 else []) + ['hex9']
+            (['a5'] if a5 else []) + (['isea3h'] if _ISEA3H else []) + \
+            (['healpix'] if hp else []) + ['hex9']
 
 
 def run_system(name):
@@ -202,10 +303,12 @@ def run_system(name):
     Area is geometry-only (no skar), so it is kept for every cell even when the
     aspect-ratio solve does not converge.
     """
-    ars, ell, sph, dnc, best, worst = [], [], [], 0, None, None
+    authalic = name in AUTHALIC_NATIVE
+    ars, ell, sph, nat, dnc, best, worst = [], [], [], [], 0, None, None
     for cid, verts in ITERATORS[name](N, SEED):
         ell.append(cell_area_wgs84(verts))   # primary: real-Earth ellipsoidal
-        sph.append(cell_area_m2(verts))       # secondary: spherical, for compare
+        sph.append(cell_area_m2(verts))       # geodetic-read-as-spherical
+        nat.append(cell_area_native_sphere(verts, authalic))  # native sphere
         r = skar.solve(verts, geo='vec3', gap_tol=GAP_TOL)
         if not isinstance(r, skar.Converged):
             dnc += 1
@@ -216,18 +319,22 @@ def run_system(name):
             best = (cid, ar)
         if worst is None or ar > worst[1]:
             worst = (cid, ar)
-    return np.array(ars), np.array(ell), np.array(sph), dnc, best, worst
+    return np.array(ars), np.array(ell), np.array(sph), np.array(nat), dnc, best, worst
 
 
 def main():
-    global H3_RES, S2_LEVEL, A5_RES, HEX9_LAYER
+    global H3_RES, S2_LEVEL, A5_RES, HEX9_LAYER, ISEA3H_LEVEL, HEALPIX_LOG2
     delta = int(sys.argv[1]) if len(sys.argv) > 1 else 0   # coarsen every system
     H3_RES -= delta
     S2_LEVEL -= delta
     A5_RES -= delta
     HEX9_LAYER -= delta
+    ISEA3H_LEVEL -= delta
+    HEALPIX_LOG2 -= delta
     SYS_LABEL.update({'h3': f'H3 r{H3_RES}', 's2': f'S2 L{S2_LEVEL}',
-                      'a5': f'A5 r{A5_RES}', 'hex9': f'hex9 L{HEX9_LAYER}'})
+                      'a5': f'A5 r{A5_RES}', 'hex9': f'hex9 L{HEX9_LAYER}',
+                      'isea3h': f'ISEA3H L{ISEA3H_LEVEL}',
+                      'healpix': f'HPX n2^{HEALPIX_LOG2}'})
     print(f"N={N}  seed={hex(SEED)}  gap_tol={GAP_TOL}  coarsen={delta}")
     print(f"systems: {', '.join(SYS_LABEL[s] for s in AVAILABLE)}\n")
 
@@ -236,17 +343,19 @@ def main():
         t0 = time.time()
         res[name] = run_system(name) + (time.time() - t0,)
 
-    # ── aspect ratio: cell circularity (1.0 = perfect circle; lower better) ──
+    # ── aspect ratio: cell circularity (1.0 = perfect circle; lower better).
+    #    `min` is the roundest sampled cell — each system's best case — so
+    #    min..max brackets the full observed roundness range.
     print("ASPECT RATIO  (enclosing-cone circularity; 1.0 = circle, lower better)")
-    print(f"{'system':<10}{'cells':>7}{'dnc':>6}{'mean':>9}{'median':>9}"
+    print(f"{'system':<11}{'cells':>7}{'dnc':>6}{'min':>9}{'mean':>9}{'median':>9}"
           f"{'p99':>9}{'max':>9}{'sec':>8}")
     for name in AVAILABLE:
-        ars, ell, sph, dnc, best, worst, dt = res[name]
+        ars, ell, sph, nat, dnc, best, worst, dt = res[name]
         if len(ars) == 0:
-            print(f"{SYS_LABEL[name]:<10}{0:>7}{dnc:>6}  (no converged cells)")
+            print(f"{SYS_LABEL[name]:<11}{0:>7}{dnc:>6}  (no converged cells)")
             continue
-        print(f"{SYS_LABEL[name]:<10}{len(ars):>7}{dnc:>6}"
-              f"{ars.mean():>9.4f}{np.median(ars):>9.4f}"
+        print(f"{SYS_LABEL[name]:<11}{len(ars):>7}{dnc:>6}"
+              f"{ars.min():>9.4f}{ars.mean():>9.4f}{np.median(ars):>9.4f}"
               f"{np.percentile(ars, 99):>9.4f}{ars.max():>9.4f}{dt:>8.2f}")
         print(f"           best  {best[1]:.4f}  {best[0]}")
         print(f"           worst {worst[1]:.4f}  {worst[0]}")
@@ -258,22 +367,34 @@ def main():
     #    alongside — they agree except for A5, which is ellipsoid-native.
     datum = "WGS84 ellipsoidal" if _GEOD else "SPHERICAL (pyproj absent)"
     print(f"\nAUTHALICITY  ({datum} cell-area uniformity; CV%→0, ratios→1.0 = ideal)")
+    # geoCV% re-reads geodetic lat/lon as spherical (a datum mismatch for the
+    # authalic-native systems, kept for comparability); natCV% measures on each
+    # system's native sphere — the authalic sphere for those in AUTHALIC_NATIVE
+    # (marked †), the coordinate sphere (= geoCV%) otherwise.
     pc = ''.join(f"{f'p{p}/μ':>9}" for p in PCTL)
-    print(f"{'system':<10}{'cells':>7}{'mean m²':>12}{'cv%':>8}{pc}"
-          f"{'max/min':>9}{'sphCV%':>9}")
+    print(f"{'system':<11}{'cells':>7}{'mean m²':>12}{'cv%':>8}{pc}"
+          f"{'max/min':>9}{'geoCV%':>9}{'natCV%':>9}")
     for name in AVAILABLE:
-        _, ell, sph, _, _, _, _ = res[name]
+        _, ell, sph, nat, _, _, _, _ = res[name]
         m = np.isfinite(ell) & (ell > 0)
         a, s = ell[m], sph[np.isfinite(sph) & (sph > 0)]
+        t = nat[np.isfinite(nat) & (nat > 0)]
         if len(a) == 0:
-            print(f"{SYS_LABEL[name]:<10}  (no measurable cells)")
+            print(f"{SYS_LABEL[name]:<11}  (no measurable cells)")
             continue
         mu = a.mean()
         cv = 100.0 * a.std() / mu
         pcols = ''.join(f"{np.percentile(a, p) / mu:>9.4f}" for p in PCTL)
         sphcv = 100.0 * s.std() / s.mean()
-        print(f"{SYS_LABEL[name]:<10}{len(a):>7}{mu:>12.4g}{cv:>8.2f}"
-              f"{pcols}{a.max() / a.min():>9.4f}{sphcv:>9.2f}")
+        natcv = 100.0 * t.std() / t.mean()
+        mark = '†' if name in AUTHALIC_NATIVE else ' '
+        print(f"{SYS_LABEL[name]:<11}{len(a):>7}{mu:>12.4g}{cv:>8.2f}"
+              f"{pcols}{a.max() / a.min():>9.4f}{sphcv:>9.2f}{natcv:>8.2f}{mark}")
+    print("† natCV measured on the WGS84 authalic sphere — the surface these\n"
+          "  grids address internally (geodetic→authalic lat conversion built\n"
+          "  in). geoCV re-reads geodetic lat/lon as spherical: for † systems\n"
+          "  that is a datum mismatch, not grid distortion. Unmarked systems\n"
+          "  address the coordinate sphere directly (natCV = geoCV).")
 
 
 if __name__ == '__main__':
