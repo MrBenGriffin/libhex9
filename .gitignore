@@ -37,6 +37,7 @@ test_data/2015-*/
 .DS_Store
 
 # LLM
+.idea/
 .claude/
 
 # Local diagnostic / probe scratch (underscore-prefixed); keepers have plain names
@@ -45,3 +46,7 @@ tools/_*
                                                                                                                 
 build-*/
 Makefile.local
+
+# tools/astro: star catalogue + generated digests (script downloads / regenerates)
+tools/astro/data/
+tools/astro/out/
