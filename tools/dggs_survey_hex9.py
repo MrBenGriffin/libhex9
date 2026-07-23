@@ -235,6 +235,13 @@ def iter_hex9(n, seed):
 
     `hex9.cell(uuid, layer, 0)` returns a closed 7-point (lon, lat) ring; drop
     the duplicate closing vertex and re-order to (lat, lon) like the a5 stream.
+
+    Also yields the EXACT native-sphere boundary as a third element:
+    `hex9.cell(..., sphere=True)` (2.1.0) emits the same ring with the
+    authalic→geodetic step skipped — the sphere hex9's equal-area machinery
+    actually addresses. This supersedes the closed-form reduction in
+    cell_area_native_sphere for hex9 (which round-trips geodetic output back
+    to authalic to ~1e-11°); a5/isea3h still take that path.
     """
     rng = np.random.default_rng(seed)
     pts = sample_uniform_lonlat(n, rng)            # (n, 2) lon, lat
@@ -249,7 +256,12 @@ def iter_hex9(n, seed):
         if len(ring) >= 2 and tuple(ring[0]) == tuple(ring[-1]):
             ring = ring[:-1]
         latlng = [(float(la), float(lo)) for lo, la in ring]
-        yield cid.hex(), skar.to_vec3(latlng, geo='latlng_deg')
+        ring_s = np.asarray(hex9.cell(u, HEX9_LAYER, 0, sphere=True))
+        if len(ring_s) >= 2 and tuple(ring_s[0]) == tuple(ring_s[-1]):
+            ring_s = ring_s[:-1]
+        latlng_s = [(float(la), float(lo)) for lo, la in ring_s]
+        yield (cid.hex(), skar.to_vec3(latlng, geo='latlng_deg'),
+               skar.to_vec3(latlng_s, geo='latlng_deg'))
 
 
 def iter_isea3h(n, seed):
@@ -305,10 +317,16 @@ def run_system(name):
     """
     authalic = name in AUTHALIC_NATIVE
     ars, ell, sph, nat, dnc, best, worst = [], [], [], [], 0, None, None
-    for cid, verts in ITERATORS[name](N, SEED):
+    for item in ITERATORS[name](N, SEED):
+        # Iterators yield (cid, verts) or (cid, verts, native_verts); an exact
+        # native-sphere boundary (hex9's sphere=True ring) beats reducing the
+        # geodetic boundary after the fact.
+        cid, verts = item[0], item[1]
+        native = item[2] if len(item) > 2 else None
         ell.append(cell_area_wgs84(verts))   # primary: real-Earth ellipsoidal
         sph.append(cell_area_m2(verts))       # geodetic-read-as-spherical
-        nat.append(cell_area_native_sphere(verts, authalic))  # native sphere
+        nat.append(cell_area_m2(native) if native is not None
+                   else cell_area_native_sphere(verts, authalic))  # native sphere
         r = skar.solve(verts, geo='vec3', gap_tol=GAP_TOL)
         if not isinstance(r, skar.Converged):
             dnc += 1

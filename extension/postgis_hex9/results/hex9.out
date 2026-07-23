@@ -534,3 +534,125 @@ FROM (SELECT h9_encode(ST_SetSRID(ST_MakePoint(-89.9863, 0.0091), 4326)) AS u) s
  f                | f
 (1 row)
 
+-- ── Sphere-datum twins (2.1.0) ───────────────────────────────────────────────
+-- The *_sphere functions run the identical chain minus the WGS84 authalic
+-- reduction. Datum doctrine: docs/warp-regimes.md, "Two datums, one regime".
+-- At the equator the reduction is exactly identity: bit-identical address.
+SELECT h9_encode_sphere(ST_SetSRID(ST_MakePoint(17.25, 0.0), 0)) =
+       h9_encode       (ST_SetSRID(ST_MakePoint(17.25, 0.0), 4326))
+           AS sphere_equator_identity;
+ sphere_equator_identity 
+-------------------------
+ t
+(1 row)
+
+-- Same numerics, different datum: addresses diverge at mid-latitude…
+SELECT h9_encode_sphere(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 0)) <>
+       h9_encode       (ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326))
+           AS sphere_diverges_mid_lat;
+ sphere_diverges_mid_lat 
+-------------------------
+ t
+(1 row)
+
+-- …but only below the coarse layers (max authalic shift ~21 km, L2 ~300 km).
+SELECT h9_bin(h9_encode_sphere(ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 0)), 2) =
+       h9_bin(h9_encode       (ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 4326)), 2)
+           AS sphere_l2_bins_agree;
+ sphere_l2_bins_agree 
+----------------------
+ t
+(1 row)
+
+-- Sphere decode: SRID 0 (spherical degrees have no EPSG identity; the datum
+-- is dataset metadata), and the round-trip returns the point (planar degrees
+-- — geography is meaningless without a datum).
+SELECT ST_SRID(h9_decode_sphere(h9_encode_sphere(
+           ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 0)))) AS sphere_srid;
+ sphere_srid 
+-------------
+           0
+(1 row)
+
+SELECT ST_Distance(
+           ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 0),
+           h9_decode_sphere(h9_encode_sphere(
+               ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 0)))
+       ) < 1e-6 AS sphere_roundtrip_sub_udeg;
+ sphere_roundtrip_sub_udeg 
+---------------------------
+ t
+(1 row)
+
+-- Sphere cell polygon: SRID 0, 7-point closed ring, contains its own
+-- decoded centroid (planar test — both sides SRID 0).
+WITH c AS (
+    SELECT h9_bin(h9_encode_sphere(
+               ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 0)), 8) AS b,
+           h9_encode_sphere(
+               ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 0)) AS u
+)
+SELECT ST_SRID(h9_cell_sphere(b, 8))    = 0 AS sphere_cell_srid,
+       ST_NPoints(h9_cell_sphere(b, 8)) = 7 AS sphere_cell_ring7,
+       ST_Contains(h9_cell_sphere(b, 8),
+                   ST_SetSRID(ST_MakePoint(-0.1276, 51.5074), 0))
+                                            AS sphere_cell_contains_point
+FROM c;
+ sphere_cell_srid | sphere_cell_ring7 | sphere_cell_contains_point 
+------------------+-------------------+----------------------------
+ t                | t                 | t
+(1 row)
+
+-- Sphere grid: enumerates, emits SRID 0, and is bin-coherent in its own
+-- datum (every centroid re-encodes into its own cell). Same numeric bbox
+-- under the WGS84 grid gives a different cell set.
+WITH gs AS (
+    SELECT * FROM h9_grid_sphere(
+        ST_MakeEnvelope(-0.3, 51.3, 0.1, 51.7, 0), 8)
+)
+SELECT count(*) > 0                                   AS sphere_grid_nonempty,
+       bool_and(ST_SRID(geom) = 0)                    AS sphere_grid_srid0,
+       bool_and(ST_SRID(centroid) = 0)                AS sphere_grid_centroid_srid0,
+       bool_and(h9_bin = h9_bin(h9_encode_sphere(centroid), 8))
+                                                      AS sphere_grid_bin_coherent
+FROM gs;
+ sphere_grid_nonempty | sphere_grid_srid0 | sphere_grid_centroid_srid0 | sphere_grid_bin_coherent 
+----------------------+-------------------+----------------------------+--------------------------
+ t                    | t                 | t                          | t
+(1 row)
+
+SELECT EXISTS (
+           SELECT h9_bin FROM h9_grid_sphere(
+               ST_MakeEnvelope(-0.3, 51.3, 0.1, 51.7, 0), 8)
+           EXCEPT
+           SELECT h9_bin FROM h9_grid(
+               ST_MakeEnvelope(-0.3, 51.3, 0.1, 51.7, 4326), 8)
+       ) AS sphere_grid_differs_from_wgs84;
+ sphere_grid_differs_from_wgs84 
+--------------------------------
+ t
+(1 row)
+
+-- ── h9_adaptive_sphere (2.1.0): same digest, sphere rendering ────────────────
+-- The digest is symbolic (addresses in/out), so h9_bin/layer/value/npoints/
+-- grade are IDENTICAL to h9_adaptive on the same input; only geom (spherical,
+-- SRID 0) and density (per STERADIAN, intrinsic to the unit sphere) differ.
+WITH pts AS (
+    SELECT array_agg(h9_encode_sphere(
+               ST_SetSRID(ST_MakePoint(lon, lat), 0))) AS u
+    FROM (VALUES (-0.1276, 51.5074), (-0.1280, 51.5070),
+                 (-3.1900, 55.9500), (17.2500, 0.0)) AS v(lon, lat)
+),
+a  AS (SELECT * FROM pts, LATERAL h9_adaptive(u, NULL, 2, 6, 2.0, 1.0)),
+s  AS (SELECT * FROM pts, LATERAL h9_adaptive_sphere(u, NULL, 2, 6, 2.0, 1.0))
+SELECT (SELECT array_agg(h9_bin ORDER BY h9_bin) FROM a) =
+       (SELECT array_agg(h9_bin ORDER BY h9_bin) FROM s)   AS adaptive_digest_identical,
+       (SELECT sum(value) FROM s) = 4.0                    AS adaptive_weight_conserved,
+       (SELECT bool_and(ST_SRID(geom) = 0) FROM s)         AS adaptive_sphere_srid0,
+       (SELECT bool_and(abs(density - value * 12.0 * 9.0 ^ layer / (4.0 * pi()))
+                        < 1e-12 * density) FROM s)         AS adaptive_density_per_sr;
+ adaptive_digest_identical | adaptive_weight_conserved | adaptive_sphere_srid0 | adaptive_density_per_sr 
+---------------------------+---------------------------+-----------------------+-------------------------
+ t                         | t                         | t                     | t
+(1 row)
+

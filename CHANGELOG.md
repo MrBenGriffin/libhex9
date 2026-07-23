@@ -10,6 +10,74 @@ address.
 
 ---
 
+## [2.1.0] — 2026-07-22
+
+### Added — sphere-datum entry points (additive; no existing address moves)
+
+Ten `*_sphere` twins of the lon/lat entry points, for callers that own their
+own datum (planetary authalic frames, celestial RA/dec): `hex9_encode_sphere`,
+`hex9_decode_sphere`, `hex9_encode_many_sphere`, `hex9_decode_many_sphere`,
+`hex9_project_sphere`, `hex9_unproject_sphere`, `hex9_project_many_sphere`,
+`hex9_unproject_many_sphere`, `hex9_grid_create_sphere`,
+`hex9_cell_ring_sphere`. Identical chain minus the WGS84 authalic reduction —
+**not a second regime**: every address has been minted on the unit sphere
+since 2.0.0, and the WGS84 functions are unchanged bit-for-bit (regime pins
+untouched). The datum is part of the function's identity, never process
+state; it is dataset metadata — never mix datums within one dataset. Doctrine
+in `docs/warp-regimes.md` ("Two datums, one regime"); pinned by
+`test/sphere_mode.c`.
+
+The grid handle records its datum at create; `hex9_grid_cell_centroid` /
+`hex9_grid_cell_ring` emit in the handle's datum with no new accessors.
+
+Python: `sphere=False` keyword on `encode`, `decode`, `cell`, `grid` — no new
+function names at that layer.
+
+PostGIS: six SQL twins — `h9_encode_sphere`, `h9_encode_many_sphere`,
+`h9_decode_sphere`, `h9_cell_sphere`, `h9_grid_sphere`, `h9_adaptive_sphere`
+— as distinct IMMUTABLE functions (datum in the function identity; nothing
+address-affecting is ever a GUC). Sphere geometries are emitted with
+**SRID 0** (spherical degrees have no EPSG identity; the datum/body is
+dataset metadata — `ST_SetSRID` yours if it has one; never tag them 4326).
+`h9_adaptive_sphere` runs the identical digest (addresses never cross the
+datum boundary); only the rendering differs — geom SRID 0, and **density in
+value per steradian**: a layer-L cell's unit-sphere area (4π/(12·9^L) sr) is
+intrinsic, so no body radius is needed; per-km² on a body = density × 4π /
+body_area, caller-side (`h9_choropleth.py --sphere` follows the same rule).
+No twins where SQL composition serves: label centroids =
+`h9_decode_sphere(h9_parse_label(t))`. Extension packaged as
+2.1.0 with a `2.0.0--2.1.0` upgrade script (additive, apply in place);
+regress suite extended and green, upgrade path tested.
+
+Deliberately **no** twins for composable surfaces: w_oct (pure rotation from
+b_oct — compose `hex9_project_sphere` + `hex9_boct_to_woct`), label centroids
+(`hex9_parse_label` + `hex9_decode_sphere`), grid centroids
+(`hex9_grid_cell_id` + `hex9_decode_sphere`).
+
+### Added — integer lattice identity (`hex9_cell_uv`)
+
+`hex9_cell_uv` / `hex9_cell_uv_many` / `hex9_uv_units`: a cell's EXACT
+integer lattice identity — centre key (the lattice hex centre, the mesh
+anchor; deliberately distinct from `h9_decode`'s representative point) and
+six canonical vertex pool keys (`(ia, ib, oid)`; on-boundary vertices get a
+deterministic representative across the seam maps, so the same physical
+vertex keys identically from every touching cell — shared-vertex meshes,
+cf. hhg9 HexMesh). Datum-free by construction: upstream of b_oct, the warp,
+and lon/lat — no `*_sphere` twins exist or ever will. `ext` flags the
+12·3^layer seam-chain cells. Removes the decode→re-project round-trip
+(through the warp and a Newton solve, twice) that address-side consumers
+previously paid. Python: `cell_uv(uuid, layers)`, `uv_units()`. Pinned by
+`test/cell_uv.c` (arithmetic parity with the geometric chain, canonical
+sharing incl. the cone-point doubled neighbour, ext census).
+`tools/h9_net.py` now renders from exact lattice vertices — seamless,
+template-free, and datum-flag-free.
+
+### Changed
+
+- `hex9_init()` is the canonical init name (it always built the whole chain,
+  not just the warp); `hex9_warp_init()` remains forever as an alias. All
+  in-tree consumers now call `hex9_init`.
+
 ## [2.0.0] — 2026-07-21
 
 ### ⚠️ Addresses change. Read this first.

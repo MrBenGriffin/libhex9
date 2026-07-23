@@ -128,7 +128,8 @@ static const int H9_BRAW_TH_PI3[8] = { 2, 5, 5, 2, 5, 2, 2, 5 };
 static inline bool cxcy_to_lonlat(double cx, double cy, int oid,
                                   double *lon, double *lat,
                                   H9BOct *bc_out = nullptr,
-                                  bool strict = true) {
+                                  bool strict = true,
+                                  const H9Authalic *aux = &h9_g_authalic) {
     constexpr double OOT_EPS = 1e-9;     /* out-of-triangle tolerance */
     const int oct_mode = (int)H9_OID_MO[oid];
 
@@ -190,7 +191,7 @@ static inline bool cxcy_to_lonlat(double cx, double cy, int oid,
     bc.u = X; bc.v = Y; bc.w = Z;
     bc.oct_i    = oid;
     bc.oct_mode = oct_mode;
-    h9_boct_to_lonlatdeg(bc, lon, lat);
+    h9_boct_to_lonlatdeg(bc, lon, lat, aux);
     if (bc_out) *bc_out = bc;
     return !std::isnan(*lon) && !std::isnan(*lat);
 }
@@ -310,8 +311,9 @@ static inline void cell_from_cxcy(double cx, double cy, int oid, int layer,
  * hex_layer).  The beam encoder h9_boct_to_uuid_beam does NOT match
  * Python — see the encoder header above for the difference. */
 static inline void lonlatdeg_to_cxcy_oid(double lon_deg, double lat_deg,
-                                         double *cx, double *cy, int *oid_out) {
-    const H9BOct bc = h9_lonlatdeg_to_boct(lon_deg, lat_deg);
+                                         double *cx, double *cy, int *oid_out,
+                                         const H9Authalic *aux = &h9_g_authalic) {
+    const H9BOct bc = h9_lonlatdeg_to_boct(lon_deg, lat_deg, aux);
 
     /* oid is the canonical octant id already computed by h9_lonlatdeg_to_boct
      * (Python H9O.oid convention). Use it directly — do NOT re-derive from the
@@ -349,9 +351,10 @@ static inline void lonlatdeg_to_cxcy_oid(double lon_deg, double lat_deg,
  * off, h9_warp_inv is identity and this returns BRAW. This is the backend seam
  * for embedders that own their own descent — see hex9_c.h hex9_project. */
 static inline void lonlatdeg_to_boct_oid(double lon_deg, double lat_deg,
-                                         double *cx, double *cy, int *oid_out) {
+                                         double *cx, double *cy, int *oid_out,
+                                         const H9Authalic *aux = &h9_g_authalic) {
     double rx, ry; int oid;
-    lonlatdeg_to_cxcy_oid(lon_deg, lat_deg, &rx, &ry, &oid);
+    lonlatdeg_to_cxcy_oid(lon_deg, lat_deg, &rx, &ry, &oid, aux);
 #if H9_WARP_ENABLE
     const int oct_mode = (int)H9_OID_MO[oid];
     h9_warp_inv(rx, ry, oct_mode, cx, cy);   /* BRAW → b_oct (AuthalicWarp.undo) */
@@ -369,8 +372,9 @@ static inline void lonlatdeg_to_boct_oid(double lon_deg, double lat_deg,
  * (to the warp's Newton tolerance). strict=false: this is a pure inverse, not a
  * containment filter, so edge points still return. Returns false on NaN. */
 static inline bool boct_oid_to_lonlat(double cx, double cy, int oid,
-                                      double *lon, double *lat) {
-    return cxcy_to_lonlat(cx, cy, oid, lon, lat, nullptr, /*strict=*/false);
+                                      double *lon, double *lat,
+                                      const H9Authalic *aux = &h9_g_authalic) {
+    return cxcy_to_lonlat(cx, cy, oid, lon, lat, nullptr, /*strict=*/false, aux);
 }
 
 /* ── Warped octahedral cartesian (w_oct): the 3D storage CRS ─────────────────
@@ -414,10 +418,11 @@ static inline void woct_to_boct(const double xyz[3], double *cx, double *cy,
 
 /* Integer-UV (pu, pv) at layer L → geographic (lon, lat). */
 static inline bool uv_to_lonlat(int64_t pu, int64_t pv, int oid, double div_f,
-                                double *lon, double *lat, H9BOct *bc_out = nullptr) {
+                                double *lon, double *lat, H9BOct *bc_out = nullptr,
+                                const H9Authalic *aux = &h9_g_authalic) {
     const double cx = (double)pu * H9_UV_U1 / div_f;
     const double cy = (double)pv * H9_UV_V3 / div_f;
-    return cxcy_to_lonlat(cx, cy, oid, lon, lat, bc_out);
+    return cxcy_to_lonlat(cx, cy, oid, lon, lat, bc_out, true, aux);
 }
 
 /* ── Containment-based UUID encoder (Python xy_regions port) ─────────────── */
@@ -1170,7 +1175,8 @@ static inline void full_id_from_cell(double cen_cx, double cen_cy,
 static inline bool node_overlaps_bbox(const ClipNode &nd, int oid, double div_f,
                                       double lon_min, double lat_min,
                                       double lon_max, double lat_max,
-                                      double pad) {
+                                      double pad,
+                                      const H9Authalic *aux = &h9_g_authalic) {
     double vlon_min = 1e30, vlon_max = -1e30;
     double vlat_min = 1e30, vlat_max = -1e30;
     bool   has_pt = false;
@@ -1179,7 +1185,7 @@ static inline bool node_overlaps_bbox(const ClipNode &nd, int oid, double div_f,
             const int64_t pu = (int64_t)H9_HI[nd.mode][c2][v][0] * nd.scale + nd.ia;
             const int64_t pv = (int64_t)H9_HI[nd.mode][c2][v][1] * nd.scale + nd.ib;
             double vlon, vlat;
-            if (!uv_to_lonlat(pu, pv, oid, div_f, &vlon, &vlat)) continue;
+            if (!uv_to_lonlat(pu, pv, oid, div_f, &vlon, &vlat, nullptr, aux)) continue;
             has_pt = true;
             if (vlon < vlon_min) vlon_min = vlon;
             if (vlon > vlon_max) vlon_max = vlon;
@@ -1209,7 +1215,8 @@ static inline void emit_hexes_for_oid(int oid, int layer, double div_f,
                                       bool apply_bbox_filter,
                                       double lon_min, double lat_min,
                                       double lon_max, double lat_max,
-                                      std::vector<H9GridCell> &out)
+                                      std::vector<H9GridCell> &out,
+                                      const H9Authalic *aux = &h9_g_authalic)
 {
     const int64_t s_int     = (int64_t)std::llround(div_f);   /* 3^L */
     const int     face_mode = (int)H9_OID_MO[oid];
@@ -1277,7 +1284,7 @@ static inline void emit_hexes_for_oid(int oid, int layer, double div_f,
 
             /* Centroid lon/lat (face_oid frame) for bbox + UUID. */
             double clon, clat;
-            if (!cxcy_to_lonlat(cen_cx, cen_cy, oid, &clon, &clat, nullptr)) continue;
+            if (!cxcy_to_lonlat(cen_cx, cen_cy, oid, &clon, &clat, nullptr, true, aux)) continue;
 
             if (apply_bbox_filter) {
                 if (clon < lon_min || clon > lon_max ||
@@ -1297,7 +1304,7 @@ static inline void emit_hexes_for_oid(int oid, int layer, double div_f,
             double hlon[6], hlat[6];
             bool ok = true;
             for (int v = 0; v < 6; v++) {
-                if (!cxcy_to_lonlat(cxv[v], cyv[v], poid[v], &hlon[v], &hlat[v], nullptr, false)) {
+                if (!cxcy_to_lonlat(cxv[v], cyv[v], poid[v], &hlon[v], &hlat[v], nullptr, false, aux)) {
                     ok = false; break;
                 }
             }
@@ -1404,7 +1411,8 @@ static inline bool enumerate(int layer,
                              double lon_min, double lat_min,
                              double lon_max, double lat_max,
                              std::vector<H9GridCell> &out,
-                             int64_t max_cells = 0) {
+                             int64_t max_cells = 0,
+                             const H9Authalic *aux = &h9_g_authalic) {
     out.clear();
     if (layer < 0 || layer > H9_LMAX) return true;
 
@@ -1418,7 +1426,7 @@ static inline bool enumerate(int layer,
             if ((int)H9_OID_MO[oid] != 0) continue;
             emit_hexes_for_oid(oid, /*layer=*/0, /*div_f=*/1.0, root,
                                /*apply_bbox_filter=*/true,
-                               lon_min, lat_min, lon_max, lat_max, out);
+                               lon_min, lat_min, lon_max, lat_max, out, aux);
         }
         sort_and_dedup_by_uuid(out);
         return true;
@@ -1462,7 +1470,7 @@ static inline bool enumerate(int layer,
             size_t w = 0;
             for (size_t qi = 0; qi < q_cur.size(); qi++) {
                 if (node_overlaps_bbox(q_cur[qi], oid, div_f,
-                                       lon_min, lat_min, lon_max, lat_max, pad))
+                                       lon_min, lat_min, lon_max, lat_max, pad, aux))
                     q_cur[w++] = q_cur[qi];
             }
             q_cur.resize(w);
@@ -1493,7 +1501,7 @@ static inline bool enumerate(int layer,
         }
 
         emit_hexes_for_oid(oid, layer, div_f, q_cur, /*apply_bbox_filter=*/true,
-                           lon_min, lat_min, lon_max, lat_max, out);
+                           lon_min, lat_min, lon_max, lat_max, out, aux);
 
         if (max_cells > 0 && (int64_t)out.size() > max_cells) {
             out.clear();

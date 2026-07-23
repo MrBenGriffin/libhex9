@@ -93,13 +93,19 @@ def main(argv=None) -> int:
     p.add_argument("--delimiter", default=",", help="CSV delimiter (default: ,)")
     p.add_argument("--chunk", type=int, default=100_000,
                    help="rows per batch (default: 100000)")
+    p.add_argument("--sphere", action="store_true",
+                   help="lon/lat are ALREADY-SPHERICAL degrees (another body's "
+                        "authalic frame, celestial RA/dec) — skip the WGS84 "
+                        "authalic reduction. Addresses minted this way are a "
+                        "different datum from the default: record it with the "
+                        "dataset and never mix datums in one dataset")
     args = p.parse_args(argv)
 
     for L in (args.bin, args.label):
         if L is not None and not (0 <= L <= 29):
             sys.exit("h9_csv: --bin/--label layer must be 0..29")
 
-    h9.warp_init()
+    h9.init()
 
     fin = sys.stdin if args.input == "-" else open(args.input, newline="")
     fout = sys.stdout if args.output == "-" else open(args.output, "w", newline="")
@@ -134,7 +140,8 @@ def main(argv=None) -> int:
                     skipped += 1
             cols = [[""] * len(rows) for _ in extra]
             if valid:
-                full = h9.encode(np.asarray(lons), np.asarray(lats))
+                full = h9.encode(np.asarray(lons), np.asarray(lats),
+                                 sphere=args.sphere)
                 series = [_uuids_from_bytes(full)]                       # full UUID
                 if args.bin is not None:
                     series.append(_uuids_from_bytes(h9.bin(full, args.bin)))

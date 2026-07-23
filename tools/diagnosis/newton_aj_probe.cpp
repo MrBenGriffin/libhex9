@@ -37,7 +37,7 @@ static double haversine_m(double lo1,double la1,double lo2,double la2){
 
 int main(int argc, char **argv) {
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
+    if (hex9_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
     const long N = (argc > 1) ? atol(argv[1]) : 100000;
 
     /* 1. Jacobian verification */

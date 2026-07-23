@@ -93,7 +93,7 @@ static void gen_point(const Zone &z, double dist_m, double *lon, double *lat) {
 
 int main(int argc, char **argv) {
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
+    if (hex9_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
     const long K = (argc > 1) ? atol(argv[1]) : 1000;
     /* solver under test: arg2 "aj" → analytic-Jacobian variant, else FD */
     const bool use_aj = (argc > 2) && std::strcmp(argv[2], "aj") == 0;

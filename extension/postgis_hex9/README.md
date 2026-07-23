@@ -97,6 +97,25 @@ CREATE INDEX ON my_points (cell8);
 | `h9_kdisk(uuid, layer, k)` | `SETOF uuid` | Cells at distance ≤ `k`, centre included (nominally `1+3k(k+1)`). *(1.2.0)* |
 | `h9_adaptive(uuid[], float8[], min_layer, max_layer, ceiling, floor DEFAULT 0)` | `TABLE(h9_bin, layer, value, npoints, density, grade, geom)` | Population-digest multi-layer grid: bottom-up digestion under a per-cell value ceiling; `sum(value)` = total input weight. `weights` may be NULL (all 1). `density`/`grade` are cartography columns (see below). *(1.2.0; uuid[]+geom 1.2.x; density/grade + `hex9`→`h9_bin` 1.4.0)* |
 | `h9_version()` | `text` | Extension version + build stamp. |
+| `h9_encode_sphere(geometry)` | `uuid` | Sphere-datum twin of `h9_encode`: the POINT is **already-spherical** lon/lat degrees (no WGS84 reduction). See datum note below. *(2.1.0)* |
+| `h9_encode_many_sphere(geometry[])` | `uuid[]` | Batch `h9_encode_sphere`. *(2.1.0)* |
+| `h9_decode_sphere(uuid)` | `geometry` | Decode to a POINT in spherical degrees, **SRID 0**. Only meaningful for sphere-minted addresses. *(2.1.0)* |
+| `h9_cell_sphere(uuid, layer, densify DEFAULT 0)` | `geometry` | Hexagon polygon in spherical degrees, SRID 0. *(2.1.0)* |
+| `h9_grid_sphere(bounds, layer, densify DEFAULT 0)` | `TABLE(h9_id, h9_bin, geom, centroid)` | `h9_grid` with the bounds read as spherical degrees; all emitted geometry SRID 0. *(2.1.0)* |
+| `h9_adaptive_sphere(uuid[], float8[], min_layer, max_layer, ceiling, floor DEFAULT 0)` | same TABLE as `h9_adaptive` | Identical digest (addresses never cross the datum boundary); geom in spherical degrees SRID 0; **density is value per steradian** — intrinsic to the unit sphere, no body radius needed; per-km² on a body = density × 4π / body_area. `grade` unchanged. *(2.1.0)* |
+
+**Sphere datum (2.1.0).** The `*_sphere` twins run the identical chain minus
+the WGS84 authalic latitude reduction — for datasets that own their datum
+(another body's authalic frame, celestial RA/dec). The address does not
+record its datum: a WGS84-minted and a sphere-minted uuid for the same
+numeric lon/lat differ below ~layer 5, so the datum is dataset metadata —
+never mix datums in one dataset, and decode with the twin that minted. Sphere
+geometry is SRID 0 (spherical degrees have no EPSG identity; `ST_SetSRID` if
+your dataset has one — never tag it 4326). The datum is carried by the
+function name, deliberately: nothing address-affecting is ever a GUC. No
+sphere `h9_label_centroid` exists — compose
+`h9_decode_sphere(h9_parse_label(t))`. Full doctrine:
+`docs/warp-regimes.md`, "Two datums, one regime".
 
 Adjacency notes: the k-family is symbolic (exact integer lattice arithmetic,
 no floating point). **Input must be a full UUID from `h9_encode`** — bin

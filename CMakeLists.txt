@@ -20,7 +20,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum macOS version libhex9 targets (match your PostgreSQL's)")
 endif()
 
-project(libhex9 VERSION 2.0.0 LANGUAGES CXX C)
+project(libhex9 VERSION 2.1.0 LANGUAGES CXX C)
 
 # ── Version consistency ─────────────────────────────────────────────────────
 # HEX9_VERSION in the public header is hand-maintained (the header is shipped
@@ -203,6 +203,18 @@ add_test(NAME curve COMMAND curve)
 add_executable(authalic test/authalic.c)
 target_link_libraries(authalic PRIVATE m)
 add_test(NAME authalic COMMAND authalic)
+
+# Sphere-datum twins: parity with the WGS84 chain (minus reduction),
+# divergence between datums, and the grid handle's datum memory.
+add_executable(sphere_mode test/sphere_mode.c)
+target_link_libraries(sphere_mode PRIVATE hex9 m)
+add_test(NAME sphere_mode COMMAND sphere_mode)
+
+# Integer lattice identity surface: arithmetic parity with the geometric
+# chain, canonical shared vertex keys, ext census.
+add_executable(cell_uv test/cell_uv.c)
+target_link_libraries(cell_uv PRIVATE hex9 m)
+add_test(NAME cell_uv COMMAND cell_uv)
 
 # v4 wedge-fold warp vs the hhg9 fold build (frozen Python reference).
 # Header-only internals; reads the fund blob + parity reference from the

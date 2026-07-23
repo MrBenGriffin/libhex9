@@ -120,6 +120,50 @@ rather than merely agreeing with our own Python — see
 `tools/support/check_equal_area.py`, which measures cell areas with
 GeographicLib's exact geodesic `PolygonArea`.
 
+## Two datums, one regime (2.1.0)
+
+2.1.0 added `*_sphere` twins of the lon/lat entry points (`hex9_encode_sphere`,
+`hex9_decode_sphere`, `hex9_project_sphere`, `hex9_unproject_sphere`, their
+`_many` forms, `hex9_grid_create_sphere`, `hex9_cell_ring_sphere`; in Python a
+`sphere=True` keyword). **This is not a second regime**, and it must never
+become one. Since 2.0.0 every address is minted on the unit sphere; WGS84
+enters the chain at exactly one place — the authalic latitude reduction at the
+lon/lat boundary. The sphere twins run the *identical* chain minus that
+reduction: their lon/lat are already-spherical degrees. They exist for callers
+that own their datum — another body's authalic frame, celestial RA/dec — and
+they make libhex9 usable as a pure spherical addressing engine.
+
+Everything the rest of this document says about regimes applies to datums,
+scaled down one level:
+
+- The 16 bytes still record nothing. A WGS84-minted and a sphere-minted
+  address for the same numeric lon/lat differ below roughly layer 5 (the
+  authalic shift peaks at ~21 km near 45°; coarse bins agree, deep ones do
+  not). `test/sphere_mode.c` pins both facts — the parity (sphere twin ==
+  WGS84 chain given pre-reduced input) and the divergence.
+- Therefore the datum is **dataset metadata**, owned by the caller, exactly
+  like the body the data belongs to. Never mix datums within one dataset.
+- The choice is carried by *which function you call* — part of the function's
+  identity, immutable, index-safe — never by ambient state. No GUC, no
+  setting, no push/pop. That is why they are twins and not a mode: the
+  pre-2.0.0 `hex9.use_warp` GUC is the cautionary tale (see
+  `extension/postgis_hex9/lwgeom_hex9.cpp`).
+- The grid handle records its datum at create and emits all subsequent
+  lon/lat in it; it is fixed for the handle's lifetime.
+- One `hex9_init()` serves both datums (the sphere path needs no series, both
+  need the warp field).
+
+The deliberately small twin surface: anything composable from symbolic ops
+plus one datum-crossing primitive got **no** twin (w_oct is a pure rotation
+from b_oct; label centroids = `hex9_parse_label` + `hex9_decode_sphere`; grid
+centroids = `hex9_grid_cell_id` + `hex9_decode_sphere`). The adaptive digest
+takes and returns addresses and never crosses the boundary at all — its SQL
+twin `h9_adaptive_sphere` differs only in rendering (geom SRID 0) and in the
+density unit: value per **steradian**, because a layer-L cell's area on the
+unit sphere (4π/(12·9^L) sr) is intrinsic, and the sphere datum deliberately
+carries no radius. Per-km² on a specific body is density × 4π / body_area,
+caller-side — the body, like the datum, is dataset metadata.
+
 ## If the projection changes again
 
 It might. Treat it as a major version, always, and:

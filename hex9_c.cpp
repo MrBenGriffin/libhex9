@@ -40,13 +40,14 @@ static int g_encoder_mode = 1;
 /* Shared scalar kernels — the single source of truth for one item, called by
  * both the scalar API and the batch loops (so batch == scalar by construction).
  * Must stay reentrant: locals only, read-only warp state + g_encoder_mode. */
-static inline void encode_one(double lon, double lat, uint8_t out[16]) {
+static inline void encode_one(double lon, double lat, uint8_t out[16],
+                              const H9Authalic *aux = &h9_g_authalic) {
     if (g_encoder_mode == 1) {
         double cx, cy; int oid;
-        h9grid::lonlatdeg_to_cxcy_oid(lon, lat, &cx, &cy, &oid);
+        h9grid::lonlatdeg_to_cxcy_oid(lon, lat, &cx, &cy, &oid, aux);
         h9grid::uuid_from_cxcy_full(cx, cy, oid, out);
     } else {
-        H9BOct b = h9_lonlatdeg_to_boct(lon, lat);
+        H9BOct b = h9_lonlatdeg_to_boct(lon, lat, aux);
         h9_boct_to_uuid(b, out);
     }
 #if !H9_HAS_HTERM
@@ -63,7 +64,8 @@ static inline void encode_one(double lon, double lat, uint8_t out[16]) {
     }
 #endif
 }
-static inline void decode_one(const uint8_t uuid[16], double *lon, double *lat) {
+static inline void decode_one(const uint8_t uuid[16], double *lon, double *lat,
+                              const H9Authalic *aux = &h9_g_authalic) {
     /* Bin UUIDs decode to the cell's geographic centroid via the exact
      * identity path (grid convention — coherent with h9_grid/h9_cell/labels
      * for every encoding flavour), which already realises the canonical
@@ -86,12 +88,12 @@ static inline void decode_one(const uint8_t uuid[16], double *lon, double *lat) 
         while (bl >= 0 && nib[bl] == 0x0Fu) bl--;
         h9kring::H9CellId id;
         if (bl >= 0 && h9kring::identity_from_uuid(uuid, bl, &id) &&
-            h9cell::identity_centroid(id, bl, lon, lat))
+            h9cell::identity_centroid(id, bl, lon, lat, aux))
             return;
         /* fall through to the boct walk for malformed bins */
     }
     H9BOct b = h9_uuid_to_boct(uuid);
-    h9_boct_to_lonlatdeg(b, lon, lat);
+    h9_boct_to_lonlatdeg(b, lon, lat, aux);
 }
 
 extern "C" const char *hex9_version(void) {
@@ -122,6 +124,13 @@ extern "C" int hex9_warp_init(char *errbuf, size_t errlen) {
     return ok ? 0 : 1;
 }
 
+/* Canonical name since 2.1.0: the function builds the whole addressing chain
+ * (authalic series + warp field), not just the warp. hex9_warp_init above is
+ * the kept-forever historic alias. */
+extern "C" int hex9_init(char *errbuf, size_t errlen) {
+    return hex9_warp_init(errbuf, errlen);
+}
+
 extern "C" void hex9_set_use_warp(int on) { h9::g_warp_use = (on != 0); }
 extern "C" void hex9_set_encoder(int mode) { g_encoder_mode = mode; }
 
@@ -132,6 +141,20 @@ extern "C" int hex9_encode(double lon, double lat, uint8_t out_uuid[16]) {
 
 extern "C" int hex9_decode(const uint8_t uuid[16], double *lon, double *lat) {
     decode_one(uuid, lon, lat);
+    return 0;
+}
+
+/* ── Sphere-datum twins ──────────────────────────────────────────────────────
+ * Identical chain minus the WGS84 authalic reduction: (lon, lat) are
+ * already-spherical degrees (h9_g_sphere, identity both ways). Same kernels,
+ * different aux — see hex9_c.h for the datum doctrine. */
+extern "C" int hex9_encode_sphere(double lon, double lat, uint8_t out_uuid[16]) {
+    encode_one(lon, lat, out_uuid, &h9_g_sphere);
+    return 0;
+}
+
+extern "C" int hex9_decode_sphere(const uint8_t uuid[16], double *lon, double *lat) {
+    decode_one(uuid, lon, lat, &h9_g_sphere);
     return 0;
 }
 
@@ -198,6 +221,24 @@ extern "C" int hex9_decode_many(const uint8_t *uuid, size_t n,
     #pragma omp parallel for schedule(static)
     for (ptrdiff_t i = 0; i < N; ++i)
         decode_one(uuid + (size_t)i * 16, &lon[i], &lat[i]);
+    return 0;
+}
+
+extern "C" int hex9_encode_many_sphere(const double *lon, const double *lat,
+                                       size_t n, uint8_t *out_uuid) {
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        encode_one(lon[i], lat[i], out_uuid + (size_t)i * 16, &h9_g_sphere);
+    return 0;
+}
+
+extern "C" int hex9_decode_many_sphere(const uint8_t *uuid, size_t n,
+                                       double *lon, double *lat) {
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        decode_one(uuid + (size_t)i * 16, &lon[i], &lat[i], &h9_g_sphere);
     return 0;
 }
 
@@ -474,6 +515,40 @@ extern "C" int hex9_unproject_many(const double *cx, const double *cy,
     return 0;
 }
 
+/* Sphere-datum twins of the projection surface (see hex9_encode_sphere). */
+extern "C" int hex9_project_sphere(double lon, double lat,
+                                   double *cx, double *cy, int *oid) {
+    h9grid::lonlatdeg_to_boct_oid(lon, lat, cx, cy, oid, &h9_g_sphere);
+    return 0;
+}
+
+extern "C" int hex9_project_many_sphere(const double *lon, const double *lat,
+                                        size_t n,
+                                        double *cx, double *cy, int *oid) {
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        h9grid::lonlatdeg_to_boct_oid(lon[i], lat[i], &cx[i], &cy[i], &oid[i],
+                                      &h9_g_sphere);
+    return 0;
+}
+
+extern "C" int hex9_unproject_sphere(double cx, double cy, int oid,
+                                     double *lon, double *lat) {
+    return h9grid::boct_oid_to_lonlat(cx, cy, oid, lon, lat, &h9_g_sphere) ? 0 : 1;
+}
+
+extern "C" int hex9_unproject_many_sphere(const double *cx, const double *cy,
+                                          const int *oid, size_t n,
+                                          double *lon, double *lat) {
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        h9grid::boct_oid_to_lonlat(cx[i], cy[i], oid[i], &lon[i], &lat[i],
+                                   &h9_g_sphere);
+    return 0;
+}
+
 /* ── Warped octahedral cartesian CRS (w_oct; the 3D storage baseline) ────────
  * Seamless 3D coordinate for the sphere — see hex9_c.h. xyz is on the unit
  * octahedron; oid == sign(xyz). b_oct <-> xyz is pure rotation; lon/lat <-> xyz
@@ -734,8 +809,101 @@ extern "C" int hex9_common_ancestor(const uint8_t *uuids, size_t n, int layer,
  * former cell_unpack float backward-walk followed the centroid-descent
  * convention and could render the wrong hexagon for canonical bins.) */
 
-extern "C" int hex9_cell_ring(const uint8_t uuid[16], int layer, int densify,
-                              double *out_lonlat, int max_points) {
+/* ── Cell lattice identity (integer UV) — see hex9_c.h ─────────────────── */
+
+/* Canonical pool key for a vertex. resolve_uv_frame canonicalises only
+ * STRICTLY out-of-face vertices; a vertex ON a face boundary is in-face for
+ * every frame that shares the edge, so each cell would otherwise report it
+ * in its own frame and pooling would miss the match (found by test: the
+ * L0-descended seam chains). Rule: enumerate the equivalent representations
+ * across every edge the vertex lies on (seam maps; corners compose) and
+ * return the lexicographically smallest (oid, ia, ib). Deterministic, frame
+ * independent, exact integers throughout. */
+static void uv_canonical(int64_t s, int64_t *u, int64_t *v, int *oid) {
+    struct Rep { int64_t u, v; int oid; };
+    Rep reps[8];
+    int n = 0;
+    reps[n++] = { *u, *v, *oid };
+    for (int i = 0; i < n; ++i) {
+        const int mo = (int)H9_OID_MO[reps[i].oid];
+        for (int e = 0; e < 3; ++e) {
+            int64_t ru, rv;
+            h9kring::seam_apply(e, mo, s, reps[i].u, reps[i].v, &ru, &rv);
+            const int nb = H9_OID_NB[reps[i].oid][e];
+            if (!h9cell::uv_in_face((int)H9_OID_MO[nb], s, ru, rv)) continue;
+            bool dup = false;
+            for (int k = 0; k < n; ++k)
+                if (reps[k].u == ru && reps[k].v == rv && reps[k].oid == nb) {
+                    dup = true;
+                    break;
+                }
+            if (!dup && n < 8) reps[n++] = { ru, rv, nb };
+        }
+    }
+    /* only boundary vertices have orbit > 1; interior verts fall through */
+    int best = 0;
+    for (int i = 1; i < n; ++i)
+        if (reps[i].oid < reps[best].oid ||
+            (reps[i].oid == reps[best].oid &&
+             (reps[i].u < reps[best].u ||
+              (reps[i].u == reps[best].u && reps[i].v < reps[best].v))))
+            best = i;
+    *u = reps[best].u;
+    *v = reps[best].v;
+    *oid = reps[best].oid;
+}
+
+extern "C" int hex9_cell_uv(const uint8_t uuid[16], int layer,
+                            int64_t *c_ia, int64_t *c_ib, int *c_oid,
+                            int64_t v_ia[6], int64_t v_ib[6], int v_oid[6],
+                            int *ext) {
+    if (layer < 0 || layer > H9_LMAX) return 1;
+    h9kring::H9CellId id;
+    if (!h9kring::identity_from_uuid(uuid, layer, &id)) return 1;
+    /* centre key stays in the cell's GOVERNING frame (mode-0 side for seam
+     * cells — the identity's own oid), so c_oid keeps its lineage meaning;
+     * vertex keys are pool keys and get the canonical representative. */
+    *c_ia  = id.ia + h9kring::H9KR_C2_DU[id.c2];
+    *c_ib  = id.ib + h9kring::H9KR_C2_DV[id.c2];
+    *c_oid = id.oid;
+    *ext   = id.ext ? 1 : 0;
+    h9cell::identity_vertices(id, layer, v_ia, v_ib, v_oid);
+    const int64_t s = h9kring::pow3(layer);
+    for (int v = 0; v < 6; ++v)
+        uv_canonical(s, &v_ia[v], &v_ib[v], &v_oid[v]);
+    return 0;
+}
+
+extern "C" int hex9_cell_uv_many(const uint8_t *uuid, const int32_t *layer,
+                                 size_t n,
+                                 int64_t *c_ia, int64_t *c_ib, int32_t *c_oid,
+                                 int64_t *v_ia, int64_t *v_ib, int32_t *v_oid,
+                                 int32_t *ext) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i) {
+        int co, ex;
+        int vo[6];
+        rc |= hex9_cell_uv(uuid + (size_t)i * 16, (int)layer[i],
+                           &c_ia[i], &c_ib[i], &co,
+                           v_ia + (size_t)i * 6, v_ib + (size_t)i * 6, vo,
+                           &ex);
+        c_oid[i] = (int32_t)co;
+        ext[i]   = (int32_t)ex;
+        for (int v = 0; v < 6; ++v) v_oid[(size_t)i * 6 + v] = (int32_t)vo[v];
+    }
+    return rc;
+}
+
+extern "C" void hex9_uv_units(double *u1, double *v3) {
+    *u1 = H9_UV_U1;
+    *v3 = H9_UV_V3;
+}
+
+static int cell_ring_impl(const uint8_t uuid[16], int layer, int densify,
+                          double *out_lonlat, int max_points,
+                          const H9Authalic *aux) {
     if (layer < 0 || layer > H9_LMAX) return -1;
     if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
     const int n_ring = hex9_ring_npoints(densify);
@@ -747,10 +915,23 @@ extern "C" int hex9_cell_ring(const uint8_t uuid[16], int layer, int densify,
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuid, layer, &id)) return -1;
     std::vector<double> lons(n_ring), lats(n_ring);
-    if (h9cell::identity_ring(id, layer, densify, lons.data(), lats.data()) != n_ring)
+    if (h9cell::identity_ring(id, layer, densify, lons.data(), lats.data(), aux) != n_ring)
         return -1;
     for (int i = 0; i < n_ring; ++i) { out_lonlat[2*i] = lons[i]; out_lonlat[2*i+1] = lats[i]; }
     return n_ring;
+}
+
+extern "C" int hex9_cell_ring(const uint8_t uuid[16], int layer, int densify,
+                              double *out_lonlat, int max_points) {
+    return cell_ring_impl(uuid, layer, densify, out_lonlat, max_points,
+                          &h9_g_authalic);
+}
+
+extern "C" int hex9_cell_ring_sphere(const uint8_t uuid[16], int layer,
+                                     int densify,
+                                     double *out_lonlat, int max_points) {
+    return cell_ring_impl(uuid, layer, densify, out_lonlat, max_points,
+                          &h9_g_sphere);
 }
 
 /* ── Grid enumeration (SRF) ──────────────────────────────────────────────────
@@ -760,14 +941,19 @@ extern "C" int hex9_cell_ring(const uint8_t uuid[16], int layer, int densify,
  * the glue's from_cell path. */
 struct hex9_grid {
     int layer;
+    /* Datum of every lon/lat this handle emits (and of the bbox it was built
+     * from). Set at create, immutable after — the handle knows what it is, so
+     * the accessors need no _sphere twins. */
+    const H9Authalic *aux;
     std::vector<H9GridCell> cells;
 };
 
-extern "C" hex9_grid *hex9_grid_create(double lon_min, double lat_min,
-                                       double lon_max, double lat_max,
-                                       int layer, int densify,
-                                       int64_t max_cells,
-                                       char *errbuf, size_t errlen) {
+static hex9_grid *grid_create_impl(double lon_min, double lat_min,
+                                   double lon_max, double lat_max,
+                                   int layer, int densify,
+                                   int64_t max_cells,
+                                   char *errbuf, size_t errlen,
+                                   const H9Authalic *aux) {
     auto fail = [&](const char *m) -> hex9_grid * {
         if (errbuf && errlen) { std::strncpy(errbuf, m, errlen - 1); errbuf[errlen - 1] = '\0'; }
         return nullptr;
@@ -781,13 +967,33 @@ extern "C" hex9_grid *hex9_grid_create(double lon_min, double lat_min,
 
     hex9_grid *g = new hex9_grid;
     g->layer = layer;
+    g->aux   = aux;
     // enumerate bails mid-BFS once the budget is exceeded, so a deep whole-world
     // request fails fast here instead of materialising 12·9^layer nodes.
-    if (!h9grid::enumerate(layer, lon_min, lat_min, lon_max, lat_max, g->cells, max_cells)) {
+    if (!h9grid::enumerate(layer, lon_min, lat_min, lon_max, lat_max, g->cells,
+                           max_cells, aux)) {
         delete g;
         return fail("cell count exceeds max_cells");
     }
     return g;
+}
+
+extern "C" hex9_grid *hex9_grid_create(double lon_min, double lat_min,
+                                       double lon_max, double lat_max,
+                                       int layer, int densify,
+                                       int64_t max_cells,
+                                       char *errbuf, size_t errlen) {
+    return grid_create_impl(lon_min, lat_min, lon_max, lat_max, layer, densify,
+                            max_cells, errbuf, errlen, &h9_g_authalic);
+}
+
+extern "C" hex9_grid *hex9_grid_create_sphere(double lon_min, double lat_min,
+                                              double lon_max, double lat_max,
+                                              int layer, int densify,
+                                              int64_t max_cells,
+                                              char *errbuf, size_t errlen) {
+    return grid_create_impl(lon_min, lat_min, lon_max, lat_max, layer, densify,
+                            max_cells, errbuf, errlen, &h9_g_sphere);
 }
 
 extern "C" int  hex9_grid_count(const hex9_grid *g) { return g ? (int)g->cells.size() : 0; }
@@ -811,7 +1017,8 @@ extern "C" int hex9_grid_cell_ring(const hex9_grid *g, int i, int densify,
     /* same identity-based construction as hex9_cell_ring (h9_cell_geom.h) */
     h9kring::H9CellId id{c.oid, c.c2, c.ia, c.ib, (bool)c.ext};
     std::vector<double> lons(n_ring), lats(n_ring);
-    if (h9cell::identity_ring(id, g->layer, densify, lons.data(), lats.data()) != n_ring)
+    if (h9cell::identity_ring(id, g->layer, densify, lons.data(), lats.data(),
+                              g->aux) != n_ring)
         return -1;
     for (int k = 0; k < n_ring; ++k) { out_lonlat[2*k] = lons[k]; out_lonlat[2*k+1] = lats[k]; }
     return n_ring;

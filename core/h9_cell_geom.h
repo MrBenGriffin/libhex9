@@ -104,7 +104,8 @@ static inline void identity_vertices(const h9kring::H9CellId &id, int layer,
  * mode-matching 6-vertex mean) for whole cells; the 4-own-vertex mean for
  * ext half-hexes. Matches H9GridCell::cen_lon/cen_lat exactly. */
 static inline bool identity_centroid(const h9kring::H9CellId &id, int layer,
-                                     double *lon, double *lat) {
+                                     double *lon, double *lat,
+                                     const H9Authalic *aux = &h9_g_authalic) {
     const double div_f = std::pow(3.0, (double)layer);
     double cx, cy;
     if (!id.ext) {
@@ -119,7 +120,7 @@ static inline bool identity_centroid(const h9kring::H9CellId &id, int layer,
         cx = (double)su * H9_UV_U1 / (4.0 * div_f);
         cy = (double)sv * H9_UV_V3 / (4.0 * div_f);
     }
-    return h9grid::cxcy_to_lonlat(cx, cy, id.oid, lon, lat);
+    return h9grid::cxcy_to_lonlat(cx, cy, id.oid, lon, lat, nullptr, true, aux);
 }
 
 /* Antimeridian/seam normalisation + exact close, in place. */
@@ -141,7 +142,8 @@ static inline void normalize_ring(double *lons, double *lats, int n_ring) {
  * frames with per-vertex octant-seam reflection — the same construction as
  * hex9_grid_cell_ring. Returns the point count, or -1 on error. */
 static inline int identity_ring(const h9kring::H9CellId &id, int layer, int densify,
-                                double *lons, double *lats) {
+                                double *lons, double *lats,
+                                const H9Authalic *aux = &h9_g_authalic) {
     if (layer < 0 || layer > H9_LMAX) return -1;
     if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
     int n_ring = 1;
@@ -160,7 +162,7 @@ static inline int identity_ring(const h9kring::H9CellId &id, int layer, int dens
         for (int v = 0; v < 6; ++v) {
             const double cx = (double)pu[v] * H9_UV_U1 / div_f;
             const double cy = (double)pv[v] * H9_UV_V3 / div_f;
-            h9grid::cxcy_to_lonlat(cx, cy, poid[v], &lons[v], &lats[v], nullptr, false);
+            h9grid::cxcy_to_lonlat(cx, cy, poid[v], &lons[v], &lats[v], nullptr, false, aux);
         }
         lons[6] = lons[0]; lats[6] = lats[0];
         normalize_ring(lons, lats, 7);
@@ -181,7 +183,7 @@ static inline int identity_ring(const h9kring::H9CellId &id, int layer, int dens
         for (int s = 0; s < v_per_edge; ++s) {
             const double t = (double)s / (double)v_per_edge;
             h9grid::cxcy_to_lonlat(cxa + (cxb - cxa) * t, cya + (cyb - cya) * t,
-                                   frame_oid, &lons[n], &lats[n], nullptr, false);
+                                   frame_oid, &lons[n], &lats[n], nullptr, false, aux);
             ++n;
         }
     }

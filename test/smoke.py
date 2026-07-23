@@ -95,6 +95,24 @@ _, _, rings_d1 = h9.grid(-0.3, 51.3, 0.1, 51.7, 8, densify=1)
 assert isinstance(rings_d1, list) and rings_d1[0].shape == (19, 2)
 print(f"grid d1: list of {len(rings_d1)} rings, first {rings_d1[0].shape}")
 
+# sphere datum kwarg: identity at the equator (authalic reduction is exactly
+# identity there, so the address must be bit-identical), divergence at
+# mid-latitude (same numbers, different datum -> different address), and the
+# sphere round-trip
+eq_lon, eq_lat = np.array([17.25]), np.array([0.0])
+assert (h9.encode(eq_lon, eq_lat) == h9.encode(eq_lon, eq_lat, sphere=True)).all()
+mid = h9.encode(np.array([-3.19]), np.array([55.95]))
+mid_s = h9.encode(np.array([-3.19]), np.array([55.95]), sphere=True)
+assert not (mid == mid_s).all(), "datums must diverge at mid-latitude"
+slon, slat = h9.decode(mid_s, sphere=True)
+assert abs(slon[0] - -3.19) < 1e-6 and abs(slat[0] - 55.95) < 1e-6
+# grid sphere kwarg: same numeric bbox, different datum -> different cell set
+su, sc, sr = h9.grid(-0.3, 51.3, 0.1, 51.7, 8, sphere=True)
+assert su.shape[0] > 0 and (su.shape != uuids.shape or not (su == uuids).all())
+# the sphere handle's ring == cell(..., sphere=True) for the same uuid
+assert (sr[0] == h9.cell(su[0], 8, sphere=True)[:6]).all()
+print(f"sphere: eq-identity, divergence, RT, grid n={su.shape[0]} OK")
+
 # adaptive digest: conservation + assignment shape (input = FULL uuids —
 # addresses, not coordinates; bins are rejected)
 au, al, av, an, aa = h9.adaptive(uu[:2000], 3, 8, 50.0, 5.0)

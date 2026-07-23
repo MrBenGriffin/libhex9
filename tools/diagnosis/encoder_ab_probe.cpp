@@ -30,7 +30,7 @@ static double urand() {                 /* splitmix64 → [0,1) */
 
 int main(int argc, char **argv) {
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
+    if (hex9_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
 
     const long N = (argc > 1) ? atol(argv[1]) : 200000;
     const int  bin_layers[] = { 8, 12, 16, 20 };

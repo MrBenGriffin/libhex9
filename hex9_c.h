@@ -57,20 +57,23 @@ extern "C" {
  * invisible in the data. Consumers that persist addresses SHOULD refuse to
  * start on a mismatch: see postgis_hex9's _PG_init for the pattern.
  */
-#define HEX9_VERSION       "2.0.0"
+#define HEX9_VERSION       "2.1.0"
 #define HEX9_VERSION_MAJOR 2
-#define HEX9_VERSION_MINOR 0
+#define HEX9_VERSION_MINOR 1
 #define HEX9_VERSION_PATCH 0
 
 /* ── Lifecycle / configuration ─────────────────────────────────────────────
  *
- * hex9_warp_init() builds the addressing chain once: the authalic latitude
+ * hex9_init() builds the addressing chain once: the authalic latitude
  * series and the Sphere-L6 warp field (~1 s — the embedded v4 fund blob ships
  * its own gradients). It is idempotent and should be called from the
  * extension's _PG_init(). Returns 0 on success; on failure writes a message
  * into errbuf (if errlen > 0) and returns non-zero. On failure the library
  * degrades to an unwarped identity field: it will still produce addresses,
  * but they are NOT Hex9 addresses. Treat a non-zero return as fatal.
+ * (hex9_warp_init is the pre-2.1.0 name, kept forever as an alias; the
+ * function was never only about the warp.) One init serves BOTH datums —
+ * the sphere entry points below need no series, but they do need the warp.
  *
  * There is ONE addressing regime. Until 2.0.0 a WGS84-trained field could be
  * selected at runtime, which meant a single point had two possible addresses
@@ -78,10 +81,25 @@ extern "C" {
  * field are gone. Data addressed by 1.x must be re-derived from its source
  * geometry — decode-and-re-encode silently invalidates anything derived from
  * it. See docs/warp-regimes.md.
+ *
+ * TWO DATUMS, ONE REGIME (2.1.0). Every address has always been minted on the
+ * unit sphere; WGS84 enters only as the authalic latitude reduction at the
+ * lon/lat boundary. The *_sphere twins below run the identical chain minus
+ * that reduction: their (lon, lat) are already-spherical degrees. They exist
+ * for callers that own their datum — another body's authalic frame, celestial
+ * RA/dec — and make libhex9 a pure spherical addressing engine. The datum is
+ * part of the function's IDENTITY, never process state: both families coexist
+ * in one process, and each function stays immutable. But the 16 bytes do not
+ * record the datum, and a WGS84-minted and sphere-minted address for the same
+ * numeric (lon, lat) differ below ~layer 5 — the datum is DATASET metadata,
+ * owned by the caller, exactly like the body the data belongs to. Never mix
+ * datums within one dataset; never surface the choice as ambient state (no
+ * GUC, no setting) — only as distinct immutable functions.
  */
 const char *hex9_version(void);                       /* libhex9 build/version string */
 int         hex9_lmax(void);                          /* deepest addressable layer (29 legacy / 30) */
-int         hex9_warp_init(char *errbuf, size_t errlen);
+int         hex9_init(char *errbuf, size_t errlen);
+int         hex9_warp_init(char *errbuf, size_t errlen);   /* historic alias of hex9_init */
 
 /* ── Dev / A-B research toggles ────────────────────────────────────────────
  *
@@ -101,8 +119,12 @@ void        hex9_set_encoder(int mode);
 
 /* ── Point addressing ──────────────────────────────────────────────────────*/
 
-/* Encode (lon, lat) to its layer-29 cell UUID. Returns 0 on success. */
+/* Encode (lon, lat) to its layer-29 cell UUID. Returns 0 on success.
+ * (lon, lat) are degrees, WGS84. The _sphere twin takes already-spherical
+ * degrees instead (see the datum doctrine above); everything else is
+ * identical, twin by twin, for every *_sphere function in this header. */
 int  hex9_encode(double lon, double lat, uint8_t out_uuid[16]);
+int  hex9_encode_sphere(double lon, double lat, uint8_t out_uuid[16]);
 
 /* Decode a UUID to the representative (lon, lat). Returns 0 on success.
  * GUARANTEED for full UUIDs only. Bins are layer-scoped keys, not
@@ -110,6 +132,7 @@ int  hex9_encode(double lon, double lat, uint8_t out_uuid[16]);
  * which mis-locates meta-bearing (split-hex / seam-flavour) cells —
  * docs/addressing-doctrine.md, F2. */
 int  hex9_decode(const uint8_t uuid[16], double *lon, double *lat);
+int  hex9_decode_sphere(const uint8_t uuid[16], double *lon, double *lat);
 
 /* Bin a UUID to its CANONICAL cell key at `layer` (0..29). Returns 0 on
  * success. The bin is the identity coarsening h9_grid enumerates with, so the
@@ -137,8 +160,12 @@ int  hex9_bin(const uint8_t uuid[16], int layer, uint8_t out_uuid[16]);
  */
 int  hex9_encode_many(const double *lon, const double *lat, size_t n,
                       uint8_t *out_uuid);
+int  hex9_encode_many_sphere(const double *lon, const double *lat, size_t n,
+                             uint8_t *out_uuid);
 int  hex9_decode_many(const uint8_t *uuid, size_t n,
                       double *lon, double *lat);
+int  hex9_decode_many_sphere(const uint8_t *uuid, size_t n,
+                             double *lon, double *lat);
 int  hex9_bin_many(const uint8_t *uuid, int layer, size_t n,
                    uint8_t *out_uuid);
 
@@ -315,6 +342,7 @@ int64_t hex9_owned_cells(const uint8_t uuid[16], int layer,
  * Return 0 on success.
  */
 int  hex9_project(double lon, double lat, double *cx, double *cy, int *oid);
+int  hex9_project_sphere(double lon, double lat, double *cx, double *cy, int *oid);
 int  hex9_project_many(const double *lon, const double *lat, size_t n,
                        double *cx, double *cy, int *oid);
 
@@ -325,8 +353,20 @@ int  hex9_project_many(const double *lon, const double *lat, size_t n,
  * Newton tolerance, ~1e-9). Returns 0 on success, non-zero if the result is
  * not finite. The _many batch form parallelises with OpenMP. */
 int  hex9_unproject(double cx, double cy, int oid, double *lon, double *lat);
+int  hex9_unproject_sphere(double cx, double cy, int oid, double *lon, double *lat);
 int  hex9_unproject_many(const double *cx, const double *cy, const int *oid,
                          size_t n, double *lon, double *lat);
+int  hex9_unproject_many_sphere(const double *cx, const double *cy, const int *oid,
+                                size_t n, double *lon, double *lat);
+int  hex9_project_many_sphere(const double *lon, const double *lat, size_t n,
+                              double *cx, double *cy, int *oid);
+
+/* NOTE (datum doctrine): the w_oct family below has NO _sphere twins on
+ * purpose — b_oct <-> w_oct is a pure rotation, so sphere callers compose
+ * hex9_project_sphere/boct_to_woct (and back). Likewise label centroids
+ * compose hex9_parse_label + hex9_decode_sphere, and grid centroids compose
+ * hex9_grid_cell_id + hex9_decode_sphere. Only functions where the reduction
+ * is internal and non-composable get a twin. */
 
 /* ── Warped octahedral cartesian CRS (w_oct): the 3D storage baseline ───────
  *
@@ -440,9 +480,59 @@ int  hex9_common_ancestor(const uint8_t *uuids, size_t n, int layer,
  * hex9_bin); bin UUIDs are lossy (decode to a representative cell). Returns
  * the number of (lon,lat) points written, or -1 on error.
  */
+/* ── Cell lattice identity (integer UV) ─────────────────────────────────────
+ *
+ * The cell's EXACT integer lattice identity at `layer` — the address-side
+ * view of its geometry, with no floating point and no datum: these values
+ * sit upstream of b_oct, upstream of the warp, upstream of lon/lat, so a
+ * WGS84-minted and a sphere-minted address for the same cell yield identical
+ * keys, and no *_sphere twins exist or ever will.
+ *
+ * Centre key: (c_ia, c_ib) in octant c_oid's frame — the LATTICE HEX CENTRE
+ * (for ext half-hexes, the octahedron-vertex hexagon's centre). This is the
+ * mesh anchor, deliberately distinct from h9_decode's representative point
+ * (the geometric centroid, which for ext cells is the 4-own-vertex mean):
+ * anchor questions come here, point questions go to decode.
+ *
+ * Vertex keys: the 6 ring vertices in ring order, as CANONICAL pool keys —
+ * out-of-face vertices via the exact-on-seam resolution (doctrine F5),
+ * on-boundary vertices via the lexicographically smallest of their
+ * equivalent representations across the shared edge(s). Per-point
+ * deterministic, so the same physical vertex yields the SAME key from every
+ * cell that touches it, including across octant seams. Pool by (ia, ib,
+ * oid) equality to build shared-vertex meshes (cf. hhg9 HexMesh); across
+ * layers, scale keys by 3^(L_fine - L) — every layer-L lattice point is a
+ * finer-layer point.
+ *
+ * `ext` flags the seam-straddling chain cells (centred on an octant edge;
+ * 12·3^layer per layer — the L0-descended chains): their identity lives in
+ * the governing mode-0 frame and ring vertices 4-5 are the reflected
+ * across-seam half. For these, this centre key and h9_decode's
+ * representative point genuinely differ — decode returns the mode-0 half's
+ * centroid (a point-in-cell guarantee), while c_ia/c_ib is the whole hex's
+ * lattice centre, ON the seam (the mesh anchor).
+ *
+ * Conversion to b_oct is pure arithmetic:
+ *     cx = ia * u1 / 3^layer,  cy = ib * v3 / 3^layer     (hex9_uv_units)
+ *
+ * `layer` may be a per-cell array in the _many form (digests mix layers).
+ * Returns 0 on success; non-zero on a malformed uuid (batch: any row).
+ */
+int  hex9_cell_uv(const uint8_t uuid[16], int layer,
+                  int64_t *c_ia, int64_t *c_ib, int *c_oid,
+                  int64_t v_ia[6], int64_t v_ib[6], int v_oid[6],
+                  int *ext);
+int  hex9_cell_uv_many(const uint8_t *uuid, const int32_t *layer, size_t n,
+                       int64_t *c_ia, int64_t *c_ib, int32_t *c_oid,
+                       int64_t *v_ia, int64_t *v_ib, int32_t *v_oid,
+                       int32_t *ext);
+void hex9_uv_units(double *u1, double *v3);
+
 int  hex9_ring_npoints(int densify);
 int  hex9_cell_ring(const uint8_t uuid[16], int layer, int densify,
                     double *out_lonlat, int max_points);
+int  hex9_cell_ring_sphere(const uint8_t uuid[16], int layer, int densify,
+                           double *out_lonlat, int max_points);
 
 /* ── Grid enumeration (set-returning) ───────────────────────────────────────
  *
@@ -464,6 +554,16 @@ hex9_grid *hex9_grid_create(double lon_min, double lat_min,
                             int layer, int densify,
                             int64_t max_cells,
                             char *errbuf, size_t errlen);
+
+/* Sphere-datum twin: the bbox is spherical lon/lat, and the HANDLE REMEMBERS —
+ * every lon/lat this grid subsequently emits (cell_centroid, cell_ring) is in
+ * the datum it was created with. The datum is per-handle state, fixed at
+ * create; the accessors below serve both datums unchanged. */
+hex9_grid *hex9_grid_create_sphere(double lon_min, double lat_min,
+                                   double lon_max, double lat_max,
+                                   int layer, int densify,
+                                   int64_t max_cells,
+                                   char *errbuf, size_t errlen);
 
 int        hex9_grid_count(const hex9_grid *g);
 void       hex9_grid_cell_uuid(const hex9_grid *g, int i, uint8_t out_uuid[16]);

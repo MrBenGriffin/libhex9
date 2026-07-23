@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
     const int L = atoi(argv[3]), N = atoi(argv[4]);
 
     char err[256];
-    if (hex9_warp_init(err, sizeof err)) { fprintf(stderr, "warp: %s\n", err); return 1; }
+    if (hex9_init(err, sizeof err)) { fprintf(stderr, "warp: %s\n", err); return 1; }
     if (argc > 5) hex9_set_encoder(atoi(argv[5]));
 
     uint8_t centre[16];

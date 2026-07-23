@@ -41,13 +41,15 @@ MODULE_big  = postgis_hex9-3
 # installed libhex9 (see below). Object lives under ./build/ so Xcode (which
 # scans the source dir for .o inputs) doesn't pick it up and double-link.
 OBJS        = build/lwgeom_hex9.o
-DATA        = postgis_hex9--2.0.0.sql \
+DATA        = postgis_hex9--2.1.0.sql \
+              postgis_hex9--2.0.0.sql \
               postgis_hex9--1.0.0--1.1.0.sql \
               postgis_hex9--1.1.0--1.2.0.sql \
               postgis_hex9--1.2.0--1.3.0.sql \
               postgis_hex9--1.3.0--1.4.0.sql \
               postgis_hex9--1.4.0--1.5.0.sql \
-              postgis_hex9--1.5.0--2.0.0.sql
+              postgis_hex9--1.5.0--2.0.0.sql \
+              postgis_hex9--2.0.0--2.1.0.sql
 
 # ── Regression tests ──────────────────────────────────────────────────────────
 REGRESS      = hex9
@@ -195,15 +197,15 @@ clean-build:
 # portable across installations, and the same mechanism the shipped upgrade
 # scripts rely on. (An absolute build-time path here once made the regression
 # suite silently load a stale dylib from another PostgreSQL.)
-postgis_hex9--2.0.0.sql: hex9.sql.in
+postgis_hex9--2.1.0.sql: hex9.sql.in
 	cp $< $@
 
-all: postgis_hex9--2.0.0.sql
+all: postgis_hex9--2.1.0.sql
 
 clean: clean-hex9-generated
 .PHONY: clean-hex9-generated
 clean-hex9-generated:
-	rm -f postgis_hex9--2.0.0.sql
+	rm -f postgis_hex9--2.1.0.sql
 
 # ── Which PostgreSQL, and which PostGIS? ─────────────────────────────────────
 # macOS routinely has two PostgreSQL installs: a Homebrew/`/usr/local` one that

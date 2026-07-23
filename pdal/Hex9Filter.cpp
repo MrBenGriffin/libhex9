@@ -42,9 +42,9 @@ void Hex9Filter::addDimensions(PointLayoutPtr layout)
 void Hex9Filter::ready(PointTableRef)
 {
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err))
+    if (hex9_init(err, sizeof err))
         log()->get(LogLevel::Warning)
-            << "hex9_warp_init: " << err << " (falling back to identity warp)\n";
+            << "hex9_init: " << err << " (falling back to identity warp)\n";
 
     const SpatialReference& srs = getSpatialReference();
     if (!srs.empty() && !srs.isGeographic())

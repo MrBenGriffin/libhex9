@@ -71,7 +71,14 @@ PG_MODULE_MAGIC;
  * (hex9_set_use_warp, hex9_set_encoder). Both are deliberately unreachable
  * from SQL. Until 2.0.0, `hex9.use_warp` WAS a PGC_USERSET GUC wired to the
  * first of them — a latent instance of exactly this bug. It is gone; the core
- * default (warp on) is simply left in place. */
+ * default (warp on) is simply left in place.
+ *
+ * The sphere datum (2.1.0) is the counter-example done right: it changes what
+ * an address means, so it is surfaced as DISTINCT immutable functions
+ * (h9_encode_sphere, ...), never as a setting. The datum is part of the
+ * function's identity — index-safe, session-independent — and dataset
+ * metadata is the caller's job. See "Two datums, one regime" in
+ * docs/warp-regimes.md. */
 static int h9_grid_max_cells;
 
 /* Resolve liblwgeom entry points (see h9_lwgeom_shim.h). Defined here, ahead of
@@ -168,7 +175,7 @@ extern "C" PGDLLEXPORT void _PG_init(void) {
 	 * addresses — so this is an ERROR, not a warning. Emitting plausible
 	 * wrong addresses is worse than refusing to start. */
 	char errbuf[256];
-	if (hex9_warp_init(errbuf, sizeof(errbuf)) != 0) {
+	if (hex9_init(errbuf, sizeof(errbuf)) != 0) {
 		ereport(ERROR,
 			(errmsg("postgis_hex9: warp init failed: %s", errbuf),
 			 errhint("Without the warp field the core falls back to an "
@@ -283,10 +290,14 @@ static bool geom_to_lonlat(GSERIALIZED *g, double *lon, double *lat,
 }
 
 /*
- * Build a 2D POINT geometry (SRID 4326) from lon/lat degrees.
+ * Build a 2D POINT geometry from lon/lat degrees. SRID 4326 for the WGS84
+ * functions; the sphere twins pass SRID_UNKNOWN (0) — spherical degrees have
+ * no EPSG identity here, the datum/body is dataset metadata (never claim
+ * 4326 for coordinates that are not WGS84: downstream ST_Transform would
+ * silently corrupt).
  */
-static GSERIALIZED *lonlat_to_geom(double lon, double lat) {
-	LWPOINT	*pt	= lwpoint_make2d(4326, lon, lat);
+static GSERIALIZED *lonlat_to_geom(double lon, double lat, int32_t srid = 4326) {
+	LWPOINT	*pt	= lwpoint_make2d(srid, lon, lat);
 	GSERIALIZED *g	= gserialized_from_lwgeom((LWGEOM *)pt, NULL);
 	lwpoint_free(pt);
 	return g;
@@ -308,7 +319,8 @@ static pg_uuid_t *make_pg_uuid(const uint8_t bytes[UUID_LEN]) {
  * differs by more than 180°, then re-centres the ring. Same stopgap as the
  * legacy corner path: the proper split (ST_Split etc.) is projection-
  * dependent and left to the caller. Mutates lonlat[] in place. */
-static GSERIALIZED *h9_polygon_from_ring(double *lonlat, int n_ring) {
+static GSERIALIZED *h9_polygon_from_ring(double *lonlat, int n_ring,
+                                         int32_t srid = 4326) {
 	/* Pairwise-normalise only the unique vertices (exclude the duplicate close
 	 * at n_ring-1): a pole-winding ring legitimately accumulates ±360° around
 	 * the circuit, so shifting the closing vertex relative to its predecessor
@@ -335,7 +347,7 @@ static GSERIALIZED *h9_polygon_from_ring(double *lonlat, int n_ring) {
 		ptarray_set_point4d(pa, (uint32_t)i, &pt);
 	}
 
-	LWPOLY      *poly = lwpoly_construct(4326, NULL, 1, rings);
+	LWPOLY      *poly = lwpoly_construct(srid, NULL, 1, rings);
 	GSERIALIZED *g    = gserialized_from_lwgeom((LWGEOM *)poly, NULL);
 	lwpoly_free(poly);
 	return g;
@@ -344,8 +356,7 @@ static GSERIALIZED *h9_polygon_from_ring(double *lonlat, int n_ring) {
 /* ── h9_encode(geometry) → uuid ─────────────────────────────────────────── */
 
 extern "C" {
-PG_FUNCTION_INFO_V1(h9_encode);
-Datum h9_encode(PG_FUNCTION_ARGS) {
+static Datum h9_encode_common(PG_FUNCTION_ARGS, bool sphere) {
 	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
 
 	GSERIALIZED *g = PG_GETARG_GSERIALIZED_P(0);
@@ -356,12 +367,20 @@ Datum h9_encode(PG_FUNCTION_ARGS) {
 						errmsg("%s", err)));
 
 	uint8_t uuid_bytes[UUID_LEN];
-	if (hex9_encode(lon, lat, uuid_bytes) != 0)
+	const int rc = sphere ? hex9_encode_sphere(lon, lat, uuid_bytes)
+	                      : hex9_encode(lon, lat, uuid_bytes);
+	if (rc != 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("h9_encode: could not encode point (%g, %g)",
 						       lon, lat)));
 	PG_RETURN_UUID_P(make_pg_uuid(uuid_bytes));
 }
+
+PG_FUNCTION_INFO_V1(h9_encode);
+Datum h9_encode(PG_FUNCTION_ARGS) { return h9_encode_common(fcinfo, false); }
+
+PG_FUNCTION_INFO_V1(h9_encode_sphere);
+Datum h9_encode_sphere(PG_FUNCTION_ARGS) { return h9_encode_common(fcinfo, true); }
 } /* extern "C" */
 
 /* ── h9_encode_many(geometry[]) → uuid[] ────────────────────────────────────
@@ -375,8 +394,7 @@ Datum h9_encode(PG_FUNCTION_ARGS) {
  * uuid[] result feeds directly into h9_adaptive(uuid[], …). */
 
 extern "C" {
-PG_FUNCTION_INFO_V1(h9_encode_many);
-Datum h9_encode_many(PG_FUNCTION_ARGS) {
+static Datum h9_encode_many_common(PG_FUNCTION_ARGS, bool sphere) {
 	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
 
 	ArrayType *arr      = PG_GETARG_ARRAYTYPE_P(0);
@@ -409,7 +427,8 @@ Datum h9_encode_many(PG_FUNCTION_ARGS) {
 	}
 
 	uint8_t *out = (uint8_t *) palloc((size_t)n * UUID_LEN);
-	hex9_encode_many(lon, lat, (size_t)n, out);
+	if (sphere) hex9_encode_many_sphere(lon, lat, (size_t)n, out);
+	else        hex9_encode_many(lon, lat, (size_t)n, out);
 	pfree(lon);
 	pfree(lat);
 
@@ -424,6 +443,16 @@ Datum h9_encode_many(PG_FUNCTION_ARGS) {
 	                                       UUIDOID, UUID_LEN, false, TYPALIGN_CHAR);
 	PG_RETURN_ARRAYTYPE_P(result);
 }
+
+PG_FUNCTION_INFO_V1(h9_encode_many);
+Datum h9_encode_many(PG_FUNCTION_ARGS) {
+	return h9_encode_many_common(fcinfo, false);
+}
+
+PG_FUNCTION_INFO_V1(h9_encode_many_sphere);
+Datum h9_encode_many_sphere(PG_FUNCTION_ARGS) {
+	return h9_encode_many_common(fcinfo, true);
+}
 } /* extern "C" */
 
 /* ── h9_decode(uuid) → geometry ─────────────────────────────────────────── */
@@ -435,20 +464,27 @@ Datum h9_encode_many(PG_FUNCTION_ARGS) {
 /*	 full UUIDs keep the beam backward walk (representative point).			*/
 
 extern "C" {
-PG_FUNCTION_INFO_V1(h9_decode);
-Datum h9_decode(PG_FUNCTION_ARGS) {
+static Datum h9_decode_common(PG_FUNCTION_ARGS, bool sphere) {
 	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
 
 	pg_uuid_t *u = PG_GETARG_UUID_P(0);
 
 	double lon, lat;
-	if (hex9_decode(u->data, &lon, &lat) != 0)
+	const int rc = sphere ? hex9_decode_sphere(u->data, &lon, &lat)
+	                      : hex9_decode(u->data, &lon, &lat);
+	if (rc != 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("h9_decode: could not decode UUID")));
 
-	GSERIALIZED *g = lonlat_to_geom(lon, lat);
+	GSERIALIZED *g = lonlat_to_geom(lon, lat, sphere ? 0 : 4326);
 	PG_RETURN_POINTER(g);
 }
+
+PG_FUNCTION_INFO_V1(h9_decode);
+Datum h9_decode(PG_FUNCTION_ARGS) { return h9_decode_common(fcinfo, false); }
+
+PG_FUNCTION_INFO_V1(h9_decode_sphere);
+Datum h9_decode_sphere(PG_FUNCTION_ARGS) { return h9_decode_common(fcinfo, true); }
 } /* extern "C" */
 
 /* ── h9_bin(uuid, integer) → uuid ───────────────────────────────────────── */
@@ -503,8 +539,7 @@ Datum h9_bin(PG_FUNCTION_ARGS) {
 /*   h9_cell == h9_grid for every UUID flavour.                                */
 
 extern "C" {
-PG_FUNCTION_INFO_V1(h9_cell);
-Datum h9_cell(PG_FUNCTION_ARGS) {
+static Datum h9_cell_common(PG_FUNCTION_ARGS, bool sphere) {
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2)) PG_RETURN_NULL();
 	pg_uuid_t *u       = PG_GETARG_UUID_P(0);
 	int32      layer   = PG_GETARG_INT32(1);
@@ -527,13 +562,22 @@ Datum h9_cell(PG_FUNCTION_ARGS) {
 
 	const int n_ring = hex9_ring_npoints(densify);
 	double *lonlat = (double *) palloc((size_t)n_ring * 2 * sizeof(double));
-	if (hex9_cell_ring(u->data, layer, densify, lonlat, n_ring) != n_ring)
+	const int got = sphere
+	    ? hex9_cell_ring_sphere(u->data, layer, densify, lonlat, n_ring)
+	    : hex9_cell_ring(u->data, layer, densify, lonlat, n_ring);
+	if (got != n_ring)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("h9_cell: not a valid H9 UUID at layer %d", layer)));
-	GSERIALIZED *g = h9_polygon_from_ring(lonlat, n_ring);
+	GSERIALIZED *g = h9_polygon_from_ring(lonlat, n_ring, sphere ? 0 : 4326);
 	pfree(lonlat);
 	PG_RETURN_POINTER(g);
 }
+
+PG_FUNCTION_INFO_V1(h9_cell);
+Datum h9_cell(PG_FUNCTION_ARGS) { return h9_cell_common(fcinfo, false); }
+
+PG_FUNCTION_INFO_V1(h9_cell_sphere);
+Datum h9_cell_sphere(PG_FUNCTION_ARGS) { return h9_cell_common(fcinfo, true); }
 } /* extern "C" */
 
 /* ── h9_label(uuid, integer) → text ─────────────────────────────────────── */
@@ -625,6 +669,7 @@ static bool h9_lwgeom_contains_pt(const LWGEOM *geom, const POINT2D *pt) {
 struct H9GridState {
 	int          layer;
 	int          densify;        /* per-row polygon densify offset (0 = legacy) */
+	int32_t      srid;           /* 4326, or 0 for the sphere datum */
 	int          count;
 	int          idx;
 	hex9_grid   *grid;           /* core handle — freed by the reset callback */
@@ -641,8 +686,7 @@ static void h9_grid_state_release(void *arg) {
 }
 
 extern "C" {
-PG_FUNCTION_INFO_V1(h9_grid);
-Datum h9_grid(PG_FUNCTION_ARGS) {
+static Datum h9_grid_common(PG_FUNCTION_ARGS, bool sphere) {
 	FuncCallContext *funcctx;
 	H9GridState     *state;
 
@@ -728,11 +772,17 @@ Datum h9_grid(PG_FUNCTION_ARGS) {
 		 * HexMesh.create_clipped uses; UUIDs derived via the containment-
 		 * based xy_regions encoder. */
 		char errbuf[256];
-		hex9_grid *grid = hex9_grid_create(gbox.xmin, gbox.ymin,
-		                                   gbox.xmax, gbox.ymax,
-		                                   layer, densify,
-		                                   (int64_t)h9_grid_max_cells,
-		                                   errbuf, sizeof(errbuf));
+		hex9_grid *grid = sphere
+		    ? hex9_grid_create_sphere(gbox.xmin, gbox.ymin,
+		                              gbox.xmax, gbox.ymax,
+		                              layer, densify,
+		                              (int64_t)h9_grid_max_cells,
+		                              errbuf, sizeof(errbuf))
+		    : hex9_grid_create(gbox.xmin, gbox.ymin,
+		                       gbox.xmax, gbox.ymax,
+		                       layer, densify,
+		                       (int64_t)h9_grid_max_cells,
+		                       errbuf, sizeof(errbuf));
 		if (!grid)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 							errmsg("h9_grid: %s", errbuf)));
@@ -749,6 +799,7 @@ Datum h9_grid(PG_FUNCTION_ARGS) {
 		state              = (H9GridState *) palloc(sizeof(H9GridState));
 		state->layer       = layer;
 		state->densify     = densify;
+		state->srid        = sphere ? 0 : 4326;
 		state->count       = hex9_grid_count(grid);
 		state->idx         = 0;
 		state->grid        = grid;
@@ -791,10 +842,12 @@ Datum h9_grid(PG_FUNCTION_ARGS) {
 		/* h9_id: full reversible identity; h9_bin: layer-scoped grouping key. */
 		values[0] = UUIDPGetDatum(make_pg_uuid(id_uuid));
 		values[1] = UUIDPGetDatum(make_pg_uuid(bin_uuid));
-		values[2] = PointerGetDatum(h9_polygon_from_ring(state->ringbuf, state->n_ring));
-		/* Cell centroid (POINT, SRID 4326) — computed by the core in the
-		 * cell's own frame, not the mean of the rendered polygon's vertices. */
-		values[3] = PointerGetDatum(lonlat_to_geom(clon, clat));
+		values[2] = PointerGetDatum(h9_polygon_from_ring(state->ringbuf, state->n_ring,
+		                                                 state->srid));
+		/* Cell centroid (POINT, in the handle's datum SRID) — computed by the
+		 * core in the cell's own frame, not the mean of the rendered polygon's
+		 * vertices. */
+		values[3] = PointerGetDatum(lonlat_to_geom(clon, clat, state->srid));
 		HeapTuple tup = heap_form_tuple(funcctx->tuple_desc, values, isnull);
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tup));
 	}
@@ -802,6 +855,12 @@ Datum h9_grid(PG_FUNCTION_ARGS) {
 	if (state->bounds_lwg) lwgeom_free(state->bounds_lwg);
 	SRF_RETURN_DONE(funcctx);
 }
+
+PG_FUNCTION_INFO_V1(h9_grid);
+Datum h9_grid(PG_FUNCTION_ARGS) { return h9_grid_common(fcinfo, false); }
+
+PG_FUNCTION_INFO_V1(h9_grid_sphere);
+Datum h9_grid_sphere(PG_FUNCTION_ARGS) { return h9_grid_common(fcinfo, true); }
 } /* extern "C" */
 
 /* ── Neighbours / k-ring / k-disk (SETOF uuid) ──────────────────────────── */
@@ -1060,12 +1119,12 @@ struct H9AdaptiveCell {
 struct H9AdaptiveState {
 	int             count;
 	int             idx;
+	bool            sphere;   /* sphere twin: geom SRID 0, density /steradian */
 	H9AdaptiveCell *cells;
 };
 
 extern "C" {
-PG_FUNCTION_INFO_V1(h9_adaptive);
-Datum h9_adaptive(PG_FUNCTION_ARGS) {
+static Datum h9_adaptive_common(PG_FUNCTION_ARGS, bool sphere) {
 	FuncCallContext *funcctx;
 
 	if (SRF_IS_FIRSTCALL()) {
@@ -1149,9 +1208,10 @@ Datum h9_adaptive(PG_FUNCTION_ARGS) {
 		if (weight) pfree(weight);
 
 		H9AdaptiveState *state = (H9AdaptiveState *) palloc(sizeof(H9AdaptiveState));
-		state->count = count;
-		state->idx   = 0;
-		state->cells = cells;
+		state->count  = count;
+		state->idx    = 0;
+		state->sphere = sphere;
+		state->cells  = cells;
 		funcctx->user_fctx = state;
 
 		get_call_result_type(fcinfo, NULL, &funcctx->tuple_desc);
@@ -1171,14 +1231,18 @@ Datum h9_adaptive(PG_FUNCTION_ARGS) {
 		values[1] = Int32GetDatum(c.layer);
 		values[2] = Float8GetDatum(c.value);
 		values[3] = Int64GetDatum(c.npoints);
-		/* density (persons/km², exact for the digest: cells are equal-area per
-		 * layer, 510065622 km² = Earth area, 12·9^layer = cells at the layer)
-		 * and grade (log₉ graduation; +1 ⇒ 9× denser). Canonical so callers
-		 * don't re-derive (and re-invert) the formula. See the API README for
-		 * the interpretation caveats (npoints=1 = point-mass reading, source
+		/* density: exact for the digest — cells are equal-area per layer,
+		 * 12·9^layer cells tile the surface. WGS84: persons/km² over Earth's
+		 * 510065622 km². Sphere twin: value per STERADIAN — the unit sphere's
+		 * cell area (4π/(12·9^L) sr) is intrinsic, so no body radius is
+		 * needed (the sphere datum carries none); per-km² on a body is
+		 * density × 4π / body_area, caller-side. grade (log₉ graduation;
+		 * +1 ⇒ 9× denser) is datum-free. Canonical so callers don't
+		 * re-derive (and re-invert) the formula. See the API README for the
+		 * interpretation caveats (npoints=1 = point-mass reading, source
 		 * quantisation, floor/ceiling binding). */
 		values[4] = Float8GetDatum(c.value * 12.0 * pow(9.0, (double)c.layer)
-		                           / 510065622.0);
+		                           / (state->sphere ? 4.0 * M_PI : 510065622.0));
 		if (c.value > 0.0)
 			values[5] = Float8GetDatum((double)c.layer + log(c.value) / log(9.0));
 		else
@@ -1188,17 +1252,27 @@ Datum h9_adaptive(PG_FUNCTION_ARGS) {
 		 * displayable layer is no longer bounded by grid enumeration) */
 		{
 			double lonlat[2 * 7];
-			if (hex9_cell_ring(c.full, c.layer, 0, lonlat, 7) != 7)
+			const int got = state->sphere
+			    ? hex9_cell_ring_sphere(c.full, c.layer, 0, lonlat, 7)
+			    : hex9_cell_ring(c.full, c.layer, 0, lonlat, 7);
+			if (got != 7)
 				ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 								errmsg("h9_adaptive: cell ring failed at layer %d",
 								       c.layer)));
-			values[6] = PointerGetDatum(h9_polygon_from_ring(lonlat, 7));
+			values[6] = PointerGetDatum(h9_polygon_from_ring(lonlat, 7,
+			                                                 state->sphere ? 0 : 4326));
 		}
 		HeapTuple tup = heap_form_tuple(funcctx->tuple_desc, values, isnull);
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tup));
 	}
 	SRF_RETURN_DONE(funcctx);
 }
+
+PG_FUNCTION_INFO_V1(h9_adaptive);
+Datum h9_adaptive(PG_FUNCTION_ARGS) { return h9_adaptive_common(fcinfo, false); }
+
+PG_FUNCTION_INFO_V1(h9_adaptive_sphere);
+Datum h9_adaptive_sphere(PG_FUNCTION_ARGS) { return h9_adaptive_common(fcinfo, true); }
 } /* extern "C" */
 
 /* ── Hamiltonian curve addressing (h9_curve family) ───────────────────────

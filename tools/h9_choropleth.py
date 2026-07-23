@@ -107,11 +107,26 @@ def main(argv=None) -> int:
     p.add_argument("--densify", type=int, default=0,
                    help="polygon edge subdivision 0..9 (default 0 = 6 corners)")
     p.add_argument("--delimiter", default=",")
+    p.add_argument("--csv", action="store_true",
+                   help="write the digest as CSV (h9_bin, layer, value, "
+                        "npoints, density, grade — the h9_adaptive columns "
+                        "minus geom) instead of GeoJSON. --png still renders")
     p.add_argument("--png", metavar="PATH", help="also render a matplotlib PNG")
     p.add_argument("--dpi", type=int, default=150,
                    help="PNG resolution in pixels/inch (default: 150)")
     p.add_argument("--size", type=float, default=8.0,
                    help="map height in inches; width follows the bbox (default: 8)")
+    p.add_argument("--sphere", action="store_true",
+                   help="lon/lat are ALREADY-SPHERICAL degrees (skip the WGS84 "
+                        "authalic reduction); output geometry is spherical too, "
+                        "and density is per STERADIAN (intrinsic to the unit "
+                        "sphere — the sphere datum carries no radius) unless "
+                        "--body-area-km2 converts it to per km2")
+    p.add_argument("--body-area-km2", type=float, metavar="KM2",
+                   help="total surface area used for the density column "
+                        "(default: Earth, 510065622 km2; under --sphere the "
+                        "default is instead the per-steradian unit — matching "
+                        "h9_adaptive_sphere)")
     p.add_argument("--color", default="grade",
                    choices=("density", "value", "grade", "layer", "npoints"),
                    help="PNG fill field (default: grade — the log9 graduation "
@@ -121,21 +136,28 @@ def main(argv=None) -> int:
     if not (0 <= args.min_layer <= args.max_layer <= 29):
         sys.exit("h9_choropleth: need 0 <= min-layer <= max-layer <= 29")
 
-    h9.warp_init()
+    # Density divisor. WGS84: Earth km² (persons/km²). Sphere: the datum
+    # carries no radius, but the unit sphere's area is intrinsic — 4π sr —
+    # so the default density is per STERADIAN (matching h9_adaptive_sphere);
+    # --body-area-km2 converts to per-km² on a specific body.
+    area_div = args.body_area_km2 if args.body_area_km2 is not None \
+        else (4.0 * math.pi if args.sphere else EARTH_KM2)
+
+    h9.init()
     lon, lat, wt, skipped = _read_points(args.input, args.lon, args.lat,
                                          args.weight, args.delimiter)
     if lon.size == 0:
         sys.exit("h9_choropleth: no usable points")
 
-    full = h9.encode(lon, lat)
+    full = h9.encode(lon, lat, sphere=args.sphere)
     uu, layers, values, npoints, _assign = h9.adaptive(
         full, args.min_layer, args.max_layer, args.ceiling, args.floor, wt)
 
     features = []
     for i in range(uu.shape[0]):
         L = int(layers[i]); v = float(values[i])
-        ring = h9.cell(uu[i], L, args.densify)              # (P,2) lon/lat, closed
-        density = v * 12.0 * (9.0 ** L) / EARTH_KM2
+        ring = h9.cell(uu[i], L, args.densify, sphere=args.sphere)  # (P,2) lon/lat, closed
+        density = v * 12.0 * (9.0 ** L) / area_div
         grade = (L + math.log(v) / math.log(9.0)) if v > 0 else None
         features.append({
             "type": "Feature",
@@ -145,11 +167,26 @@ def main(argv=None) -> int:
                            "density": density, "grade": grade},
         })
 
-    fc = {"type": "FeatureCollection", "features": features}
-    fout = sys.stdout if args.output == "-" else open(args.output, "w")
+    fout = sys.stdout if args.output == "-" else open(args.output, "w", newline="")
     try:
-        json.dump(fc, fout)
-        fout.write("\n")
+        if args.csv:
+            # The h9_adaptive row shape minus geom — the tabular twin of the
+            # GeoJSON properties. h9_bin is the layer-scoped key as uuid text.
+            w = csv.writer(fout)
+            w.writerow(["h9_bin", "layer", "value", "npoints", "density", "grade"])
+            for i, f in enumerate(features):
+                pr = f["properties"]
+                b = bytes(uu[i])
+                w.writerow([
+                    f"{b[:4].hex()}-{b[4:6].hex()}-{b[6:8].hex()}-"
+                    f"{b[8:10].hex()}-{b[10:].hex()}",
+                    pr["layer"], repr(pr["value"]), pr["npoints"],
+                    repr(pr["density"]),
+                    repr(pr["grade"]) if pr["grade"] is not None else "",
+                ])
+        else:
+            json.dump({"type": "FeatureCollection", "features": features}, fout)
+            fout.write("\n")
     finally:
         if fout is not sys.stdout:
             fout.close()

@@ -14,8 +14,8 @@ them.
 #include <hex9_c.h>
 
 uint8_t uuid[16];
-hex9_warp_init(NULL, 0);
-hex9_encode(-3.19, 55.95, uuid);   /* lon, lat → cell address */
+hex9_init(NULL, 0);                /* hex9_warp_init remains as an alias */
+hex9_encode(-3.19, 55.95, uuid);   /* lon, lat (WGS84) → cell address */
 ```
 
 ## What makes a Hex9 address
@@ -49,6 +49,15 @@ on-disk format remains available with `-DHEX9_USE_L29=ON`.
 | **`w_oct`** | warped octahedral cartesian CRS — the seamless 3D baseline for point-cloud storage |
 
 The equal-area (authalic) warp holds cell areas uniform to ~0.014 % globally.
+
+**Datums.** WGS84 is the default and the only ellipsoid. Every lon/lat entry
+point also has a `*_sphere` twin (2.1.0) that skips the WGS84 authalic
+reduction and takes already-spherical degrees — for callers that own their
+datum: another body's authalic frame, or celestial RA/dec. Same chain, same
+addresses on the sphere side; the datum is part of the function name, never a
+runtime mode, and which datum minted an address is dataset metadata the
+caller keeps. Doctrine: [`docs/warp-regimes.md`](docs/warp-regimes.md),
+"Two datums, one regime".
 
 ## Consumers
 

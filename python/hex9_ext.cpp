@@ -20,44 +20,134 @@
 namespace nb = nanobind;
 
 using f64_1d  = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using i32_1d  = nb::ndarray<const int32_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using u8_2d_in = nb::ndarray<const uint8_t, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 
 /* Initialise the warp once; raises on failure. */
-static void warp_init() {
+static void warp_init() {   /* C-side canonical name is hex9_init since 2.1.0 */
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err))
+    if (hex9_init(err, sizeof err))
         throw std::runtime_error(std::string("hex9 warp init failed: ") + err);
 }
 
 /* encode(lon[n], lat[n]) -> uint8[n,16] */
 static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
-encode(f64_1d lon, f64_1d lat) {
+encode(f64_1d lon, f64_1d lat, bool sphere) {
     const size_t n = lon.shape(0);
     if (lat.shape(0) != n) throw std::runtime_error("lon and lat must be the same length");
     uint8_t *out = new uint8_t[n * 16];
     {
         nb::gil_scoped_release release;
-        hex9_encode_many(lon.data(), lat.data(), n, out);
+        if (sphere) hex9_encode_many_sphere(lon.data(), lat.data(), n, out);
+        else        hex9_encode_many(lon.data(), lat.data(), n, out);
     }
     nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
     return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
 }
 
 /* decode(uuid[n,16]) -> (lon[n], lat[n]) */
-static nb::tuple decode(u8_2d_in uuid) {
+static nb::tuple decode(u8_2d_in uuid, bool sphere) {
     const size_t n = uuid.shape(0);
     if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
     double *lon = new double[n];
     double *lat = new double[n];
     {
         nb::gil_scoped_release release;
-        hex9_decode_many(uuid.data(), n, lon, lat);
+        if (sphere) hex9_decode_many_sphere(uuid.data(), n, lon, lat);
+        else        hex9_decode_many(uuid.data(), n, lon, lat);
     }
     nb::capsule lon_o(lon, [](void *p) noexcept { delete[] static_cast<double *>(p); });
     nb::capsule lat_o(lat, [](void *p) noexcept { delete[] static_cast<double *>(p); });
     return nb::make_tuple(
         nb::ndarray<nb::numpy, double, nb::ndim<1>>(lon, {n}, lon_o),
         nb::ndarray<nb::numpy, double, nb::ndim<1>>(lat, {n}, lat_o));
+}
+
+/* project(lon[n], lat[n]) -> (cx[n], cy[n], oid[n]) — the b_oct backend
+ * surface (continuous, no descent; see hex9_c.h hex9_project). */
+static nb::tuple project(f64_1d lon, f64_1d lat, bool sphere) {
+    const size_t n = lon.shape(0);
+    if (lat.shape(0) != n) throw std::runtime_error("lon and lat must be the same length");
+    double *cx = new double[n];
+    double *cy = new double[n];
+    int32_t *oid = new int32_t[n];
+    {
+        nb::gil_scoped_release release;
+        static_assert(sizeof(int) == sizeof(int32_t), "oid width");
+        if (sphere) hex9_project_many_sphere(lon.data(), lat.data(), n,
+                                             cx, cy, (int *)oid);
+        else        hex9_project_many(lon.data(), lat.data(), n,
+                                      cx, cy, (int *)oid);
+    }
+    nb::capsule cx_o(cx, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    nb::capsule cy_o(cy, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    nb::capsule oid_o(oid, [](void *p) noexcept { delete[] static_cast<int32_t *>(p); });
+    return nb::make_tuple(
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(cx, {n}, cx_o),
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(cy, {n}, cy_o),
+        nb::ndarray<nb::numpy, int32_t, nb::ndim<1>>(oid, {n}, oid_o));
+}
+
+/* unproject(cx[n], cy[n], oid[n]) -> (lon[n], lat[n]) — exact inverse. */
+static nb::tuple unproject(f64_1d cx, f64_1d cy, i32_1d oid, bool sphere) {
+    const size_t n = cx.shape(0);
+    if (cy.shape(0) != n || oid.shape(0) != n)
+        throw std::runtime_error("cx, cy and oid must be the same length");
+    double *lon = new double[n];
+    double *lat = new double[n];
+    {
+        nb::gil_scoped_release release;
+        if (sphere) hex9_unproject_many_sphere(cx.data(), cy.data(),
+                                               (const int *)oid.data(), n, lon, lat);
+        else        hex9_unproject_many(cx.data(), cy.data(),
+                                        (const int *)oid.data(), n, lon, lat);
+    }
+    nb::capsule lon_o(lon, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    nb::capsule lat_o(lat, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    return nb::make_tuple(
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(lon, {n}, lon_o),
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(lat, {n}, lat_o));
+}
+
+/* cell_uv(uuid[n,16], layers[n]) -> (c_ia, c_ib, c_oid, v_ia[n,6],
+ * v_ib[n,6], v_oid[n,6], ext) — the integer lattice identity surface.
+ * Datum-free; vertex keys are canonical pool keys (see hex9_c.h). */
+static nb::tuple cell_uv(u8_2d_in uuid, i32_1d layers) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    if (layers.shape(0) != n) throw std::runtime_error("layers must match uuid rows");
+    int64_t *cia = new int64_t[n];
+    int64_t *cib = new int64_t[n];
+    int32_t *coid = new int32_t[n];
+    int64_t *via = new int64_t[n * 6];
+    int64_t *vib = new int64_t[n * 6];
+    int32_t *void_ = new int32_t[n * 6];
+    int32_t *ext = new int32_t[n];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = hex9_cell_uv_many(uuid.data(), layers.data(), n,
+                               cia, cib, coid, via, vib, void_, ext);
+    }
+    if (rc) {
+        delete[] cia; delete[] cib; delete[] coid;
+        delete[] via; delete[] vib; delete[] void_; delete[] ext;
+        throw std::runtime_error("hex9.cell_uv: malformed uuid/layer in batch");
+    }
+    auto own64 = [](int64_t *p) {
+        return nb::capsule(p, [](void *q) noexcept { delete[] static_cast<int64_t *>(q); });
+    };
+    auto own32 = [](int32_t *p) {
+        return nb::capsule(p, [](void *q) noexcept { delete[] static_cast<int32_t *>(q); });
+    };
+    return nb::make_tuple(
+        nb::ndarray<nb::numpy, int64_t, nb::ndim<1>>(cia, {n}, own64(cia)),
+        nb::ndarray<nb::numpy, int64_t, nb::ndim<1>>(cib, {n}, own64(cib)),
+        nb::ndarray<nb::numpy, int32_t, nb::ndim<1>>(coid, {n}, own32(coid)),
+        nb::ndarray<nb::numpy, int64_t, nb::ndim<2>>(via, {n, 6}, own64(via)),
+        nb::ndarray<nb::numpy, int64_t, nb::ndim<2>>(vib, {n, 6}, own64(vib)),
+        nb::ndarray<nb::numpy, int32_t, nb::ndim<2>>(void_, {n, 6}, own32(void_)),
+        nb::ndarray<nb::numpy, int32_t, nb::ndim<1>>(ext, {n}, own32(ext)));
 }
 
 /* bin(uuid[n,16], layer) -> uint8[n,16] */
@@ -203,12 +293,13 @@ own_f64(double *p, std::initializer_list<size_t> shape) {
 
 /* cell(uuid[16], layer, densify=0) -> (npoints, 2) closed lon/lat ring */
 static nb::ndarray<nb::numpy, double, nb::ndim<2>>
-cell(u8_1d uuid, int layer, int densify) {
+cell(u8_1d uuid, int layer, int densify, bool sphere) {
     if (uuid.shape(0) != 16) throw std::runtime_error("uuid must be a (16,) uint8 array");
     int P = hex9_ring_npoints(densify);
     if (P < 0) throw std::runtime_error("hex9.cell: densify out of range (0..9)");
     double *r = new double[(size_t)P * 2];
-    int got = hex9_cell_ring(uuid.data(), layer, densify, r, P);
+    int got = sphere ? hex9_cell_ring_sphere(uuid.data(), layer, densify, r, P)
+                     : hex9_cell_ring(uuid.data(), layer, densify, r, P);
     if (got < 0) { delete[] r; throw std::runtime_error("hex9.cell: invalid layer/densify"); }
     return own_f64<2>(r, {(size_t)P, 2});
 }
@@ -218,13 +309,15 @@ cell(u8_1d uuid, int layer, int densify) {
  * rings: densify==0 -> flat (n,6,2) of the 6 hex corners;
  *        densify>0  -> list of n (npoints,2) closed-ring arrays. */
 static nb::tuple grid(double lon_min, double lat_min, double lon_max, double lat_max,
-                      int layer, int densify, int64_t max_cells) {
+                      int layer, int densify, int64_t max_cells, bool sphere) {
     char err[256] = {0};
     hex9_grid *g = nullptr;
     {
         nb::gil_scoped_release release;
-        g = hex9_grid_create(lon_min, lat_min, lon_max, lat_max,
-                             layer, densify, max_cells, err, sizeof err);
+        g = sphere ? hex9_grid_create_sphere(lon_min, lat_min, lon_max, lat_max,
+                                             layer, densify, max_cells, err, sizeof err)
+                   : hex9_grid_create(lon_min, lat_min, lon_max, lat_max,
+                                      layer, densify, max_cells, err, sizeof err);
     }
     if (!g) throw std::runtime_error(std::string("hex9.grid: ") + err);
     const int n = hex9_grid_count(g);
@@ -397,14 +490,42 @@ NB_MODULE(hex9_ext, m) {
     m.doc() = "libhex9 — Hex9 DGGS fast backend (nanobind + OpenMP).";
     m.def("version", &hex9_version);
     m.def("lmax", &hex9_lmax, "Deepest addressable layer (29 legacy / 30 reclaimed).");
+    m.def("init", &warp_init,
+          "Build the addressing chain (authalic series + warp field). Done "
+          "automatically at import; only needed again after a failed init. "
+          "Canonical name since 2.1.0.");
     m.def("warp_init", &warp_init,
-          "Rebuild the authalic-warp state. Done automatically at import; only "
-          "needed again after a failed init.");
+          "Historic alias of init() (pre-2.1.0 name).");
     m.def("set_encoder",  [](int mode) { hex9_set_encoder(mode); }, nb::arg("mode"));
     m.def("encode", &encode, nb::arg("lon"), nb::arg("lat"),
-          "Encode lon/lat arrays to an (n,16) uint8 array of cell UUIDs.");
-    m.def("decode", &decode, nb::arg("uuid"),
-          "Decode an (n,16) uint8 UUID array to (lon, lat) arrays.");
+          nb::arg("sphere") = false,
+          "Encode lon/lat arrays to an (n,16) uint8 array of cell UUIDs. "
+          "sphere=True: lon/lat are already-spherical degrees (no WGS84 "
+          "authalic reduction) — the datum is dataset metadata; never mix "
+          "within one dataset.");
+    m.def("decode", &decode, nb::arg("uuid"), nb::arg("sphere") = false,
+          "Decode an (n,16) uint8 UUID array to (lon, lat) arrays. "
+          "sphere=True emits spherical degrees (see encode).");
+    m.def("project", &project, nb::arg("lon"), nb::arg("lat"),
+          nb::arg("sphere") = false,
+          "Continuous projection: lon/lat arrays -> (cx, cy, oid) in the "
+          "b_oct frame (no descent — the backend surface for embedders and "
+          "renderers). sphere=True: inputs are already-spherical degrees.");
+    m.def("unproject", &unproject, nb::arg("cx"), nb::arg("cy"), nb::arg("oid"),
+          nb::arg("sphere") = false,
+          "Exact inverse of project: (cx, cy, oid) arrays -> (lon, lat). "
+          "sphere=True emits spherical degrees.");
+    m.def("cell_uv", &cell_uv, nb::arg("uuid"), nb::arg("layers"),
+          "Integer lattice identity of each (n,16) bin at layers[n]: "
+          "(c_ia, c_ib, c_oid, v_ia[n,6], v_ib[n,6], v_oid[n,6], ext). "
+          "Exact integers at scale 3^layer (b_oct via uv_units); vertex keys "
+          "are canonical pool keys for shared-vertex meshes. Datum-free — "
+          "upstream of b_oct and lon/lat.");
+    m.def("uv_units", []() {
+        double u1, v3;
+        hex9_uv_units(&u1, &v3);
+        return nb::make_tuple(u1, v3);
+    }, "The lattice unit lengths (u1, v3): cx = ia*u1/3^L, cy = ib*v3/3^L.");
     m.def("bin", &bin, nb::arg("uuid"), nb::arg("layer"),
           "Bin an (n,16) UUID array to cell keys at the given layer.");
     m.def("cell_parent", &cell_parent, nb::arg("uuid"),
@@ -418,12 +539,16 @@ NB_MODULE(hex9_ext, m) {
           "reification; NOT iterated cell_parent, which decoheres at nested "
           "splits). Cells already at `layer` pass through unchanged.");
     m.def("cell", &cell, nb::arg("uuid"), nb::arg("layer"), nb::arg("densify") = 0,
-          "Hexagon ring (npoints,2) lon/lat for a UUID at layer/densify.");
+          nb::arg("sphere") = false,
+          "Hexagon ring (npoints,2) lon/lat for a UUID at layer/densify. "
+          "sphere=True emits spherical degrees.");
     m.def("grid", &grid,
           nb::arg("lon_min"), nb::arg("lat_min"), nb::arg("lon_max"), nb::arg("lat_max"),
           nb::arg("layer"), nb::arg("densify") = 0, nb::arg("max_cells") = 0,
+          nb::arg("sphere") = false,
           "Enumerate cells in a lon/lat bbox -> (uuids[n,16], centroids[n,2], rings). "
-          "rings is (n,6,2) when densify=0, else a list of (npoints,2) arrays.");
+          "rings is (n,6,2) when densify=0, else a list of (npoints,2) arrays. "
+          "sphere=True: the bbox AND all emitted lon/lat are spherical degrees.");
     m.def("neighbors", &neighbors, nb::arg("uuid"), nb::arg("layer"),
           "Edge-adjacent cells of each (n,16) FULL UUID at layer -> "
           "(uint8[n,6,16], int32[n] counts). Counts are 6, or 5 on octahedron-"

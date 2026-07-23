@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
     const double step_m = (argc > 5) ? atof(argv[5]) : 0.02;
     const int verbose = (argc > 6);
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
+    if (hex9_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
 
     const double cell_area = 4.0 * M_PI / (12.0 * pow(9.0, (double)L));
     const double r = sqrt(cell_area * 2.0 / (3.0 * sqrt(3.0)));   /* rad */

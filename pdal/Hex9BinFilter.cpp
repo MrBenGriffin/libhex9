@@ -101,8 +101,8 @@ void Hex9BinFilter::addDimensions(PointLayoutPtr layout)
 void Hex9BinFilter::ready(PointTableRef table)
 {
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err))
-        log()->get(LogLevel::Warning) << "hex9_warp_init: " << err << "\n";
+    if (hex9_init(err, sizeof err))
+        log()->get(LogLevel::Warning) << "hex9_init: " << err << "\n";
     if (!m_weightDim.empty())
         m_weight = table.layout()->findDim(m_weightDim);
 }

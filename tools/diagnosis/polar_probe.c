@@ -63,7 +63,7 @@ static int bin_at(double lon, double lat, int L, uint8_t out[16]) {
 
 int main(void) {
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
+    if (hex9_init(err, sizeof err)) { printf("warp init FAILED: %s\n", err); return 1; }
 
     const int L = 15;
     const double pts[4][2] = { {180, 89.1}, {-0.0, 89.1}, {0, -89.1}, {180, -89.1} };

@@ -822,18 +822,29 @@ static void h9_boct_to_lonlat(H9BOct b, double *lon_rad, double *lat_rad) {
 /* ── Degree convenience wrappers ─────────────────────────────────────────────
  * The authalic latitude reduction lives HERE, at the geodetic boundary of the
  * pipeline: everything inside h9_lonlat_to_boct / h9_boct_to_lonlat operates
- * on the authalic sphere. This pair is the ONLY place the ellipsoid enters. */
+ * on the authalic sphere. This pair is the ONLY place the ellipsoid enters.
+ *
+ * `aux` selects the datum of the (lon, lat) boundary: the WGS84 series
+ * (default) or h9_g_sphere, whose reduction is the exact identity — callers
+ * feeding already-spherical lon/lat (another body's authalic frame, celestial
+ * RA/dec) own their own reduction upstream. The datum is a per-call input,
+ * never process state: both run in one process, and nothing downstream of
+ * this pair depends on which was used. */
 
-static H9BOct h9_lonlatdeg_to_boct(double lon_deg, double lat_deg) {
+static const H9Authalic h9_g_sphere = {{0}, {0}, 0, 1};
+
+static H9BOct h9_lonlatdeg_to_boct(double lon_deg, double lat_deg,
+                                   const H9Authalic *aux = &h9_g_authalic) {
     const double lat_rad =
-        h9_geodetic_to_authalic(&h9_g_authalic, lat_deg * (M_PI / 180.0));
+        h9_geodetic_to_authalic(aux, lat_deg * (M_PI / 180.0));
     return h9_lonlat_to_boct(lon_deg * (M_PI / 180.0), lat_rad);
 }
 
-static void h9_boct_to_lonlatdeg(H9BOct b, double *lon_deg, double *lat_deg) {
+static void h9_boct_to_lonlatdeg(H9BOct b, double *lon_deg, double *lat_deg,
+                                 const H9Authalic *aux = &h9_g_authalic) {
     double lon_r, lat_r;
     h9_boct_to_lonlat(b, &lon_r, &lat_r);
-    lat_r = h9_authalic_to_geodetic(&h9_g_authalic, lat_r);
+    lat_r = h9_authalic_to_geodetic(aux, lat_r);
     *lon_deg = lon_r * (180.0 / M_PI);
     *lat_deg = lat_r * (180.0 / M_PI);
 }

@@ -99,7 +99,7 @@ static void hexify(const unsigned char *u, char *out)
 int main(void)
 {
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err)) {
+    if (hex9_init(err, sizeof err)) {
         fprintf(stderr, "warp init failed: %s\n", err);
         return 1;
     }

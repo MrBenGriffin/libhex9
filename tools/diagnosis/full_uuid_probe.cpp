@@ -44,7 +44,7 @@ static int64_t pow3(int e) { int64_t p = 1; for (int i = 0; i < e; i++) p *= 3; 
 
 int main(void) {
     char err[256] = {0};
-    if (hex9_warp_init(err, sizeof err)) {
+    if (hex9_init(err, sizeof err)) {
         std::printf("warp init FAILED: %s\n", err);
         return 1;
     }

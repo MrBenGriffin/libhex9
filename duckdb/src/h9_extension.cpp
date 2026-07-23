@@ -29,7 +29,7 @@ void RegisterH9Table(ExtensionLoader &loader);
 
 static void LoadInternal(ExtensionLoader &loader) {
 	char errbuf[256] = {0};
-	if (hex9_warp_init(errbuf, sizeof(errbuf)) != 0) {
+	if (hex9_init(errbuf, sizeof(errbuf)) != 0) {
 		throw IOException("hex9: warp init failed — refusing to load (the degraded field would not "
 		                  "produce Hex9 addresses): %s",
 		                  errbuf);
