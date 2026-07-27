@@ -239,7 +239,14 @@ See `pdal/examples/README.md` for an end-to-end LiDAR → Hex9 → maps walkthro
 
 The `hex9-sys` crate at `geoplegma/` builds `libhex9` **itself** (via the
 `cmake` crate, `hex9Static` target) and generates FFI bindings from `hex9_c.h` —
-nothing needs to be pre-installed.
+nothing needs to be pre-installed beyond a C++17 toolchain, CMake ≥ 3.16, and
+**libclang** for bindgen (Debian/Ubuntu: `apt install libclang-dev`; macOS:
+comes with Xcode / Command Line Tools).
+
+> **Windows:** the default MSVC Rust toolchain **cannot** build libhex9 — the
+> warp blob is embedded with GNU-assembler `.incbin`, which MSVC does not
+> support. Use WSL2 (recommended) or the `x86_64-pc-windows-gnu` toolchain:
+> see [docs/building-on-windows.md](docs/building-on-windows.md).
 
 ```sh
 cd geoplegma

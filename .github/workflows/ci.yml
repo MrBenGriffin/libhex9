@@ -1,0 +1,77 @@
+# Compile-and-test CI.
+#
+# Two consumption paths are covered on Linux + macOS:
+#   core      — the C library exactly as INSTALL.md §1 builds it, plus ctest.
+#   geoplegma — the hex9-sys Rust crate (cmake + bindgen), i.e. precisely what
+#               a GeoPlegma `cargo build` does on a user's machine.
+#
+# windows-mingw is experimental (continue-on-error): libhex9 embeds its warp
+# blob via GNU-as `.incbin`, so MSVC can never build it and MinGW is the only
+# native-Windows candidate. This job exists to find out whether that path
+# actually works; docs/building-on-windows.md is the user-facing story.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    name: core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  geoplegma:
+    name: hex9-sys, the GeoPlegma path (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libclang for bindgen
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+      - name: Build
+        working-directory: geoplegma
+        run: cargo build --locked
+      - name: Test
+        working-directory: geoplegma
+        run: cargo test --locked
+
+  windows-mingw:
+    name: windows (MinGW, experimental)
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+      - name: Configure
+        run: cmake -S . -B build -G Ninja
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
