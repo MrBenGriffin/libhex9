@@ -24,3 +24,18 @@ AUTHORSHIP AND ACCOUNTABILITY
   Per-file copyright notices in the source carry the year of first
   authorship for that file; this notice is the canonical statement for the
   work as a whole.
+
+THIRD-PARTY CODE
+  core/h9_det_math.h contains floating-point kernels derived from musl libc
+  1.2.5 (MIT licence; Rich Felker and contributors), themselves derived from
+  FreeBSD msun / fdlibm:
+
+    Copyright (C) 1993, 2004 by Sun Microsystems, Inc. All rights reserved.
+    Developed at SunSoft/SunPro, a Sun Microsystems, Inc. business.
+    Permission to use, copy, modify, and distribute this software is freely
+    granted, provided that this notice is preserved.
+
+  That notice is preserved here and in the file itself. The kernels are
+  vendored deliberately (see the file's header): deterministic, platform-
+  independent arithmetic is a correctness requirement of this work, not an
+  optimisation. All other code is original to this work.

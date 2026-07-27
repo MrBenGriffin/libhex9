@@ -12,6 +12,45 @@ address.
 
 ## [2.1.0] — 2026-07-22
 
+### Changed — deterministic encode chain (universality) — 2026-07-27
+
+The floating-point program of the encode/decode chain is now **the definition
+of the address**: the same lon/lat yields the bit-identical uuid (and curve)
+on every conforming platform. The first multi-platform CI run proved that
+libm/FMA variance flips deep nibbles for boundary-adjacent points (Linux and
+Windows vs the macOS-generated goldens; primary source: compiler FMA
+contraction on arm64, libm differences the residual). Universality cannot be
+bought with accuracy — distance-to-boundary has no floor — only with
+bit-identical arithmetic.
+
+- `core/h9_det_math.h` (new): `sin`/`cos`/`tan`/`atan2`/`hypot` vendored
+  verbatim from musl 1.2.5 (fdlibm lineage — see COPYRIGHT), header-only,
+  `h9_`-prefixed. `sqrt`/`fmod` remain libm: IEEE requires them correctly
+  rounded, so they are already deterministic. Guards: `FLT_EVAL_METHOD == 0`
+  enforced at compile time; clang `FP_CONTRACT OFF` pragma in the header.
+- `pow(x, 0.25)` eliminated from the chain → `h9_qroot(x)` =
+  `sqrt(sqrt(x))` — two IEEE-exact operations, deterministic and faster.
+- `-ffp-contract=off` pinned project-wide, and separately in the DuckDB
+  extension tree (which compiles the core itself).
+- `regime_pin` goldens re-derived once, deliberately, from a
+  via_sphere-green pinned build. Every moved row diverges at nibble ≥ 26
+  (leaf tail); the ownership ladder is byte-identical. Determinism evidence:
+  `gen_regime_pin` output is byte-identical across `-O0` / `-O2` /
+  `-O3 -march=native`; kernels are ≤ 1 ULP of Apple libm over the chain's
+  domains (tan ≤ 3, near π/2); the via_sphere oracle and full suite pass;
+  encode wall-time is unchanged. Cross-platform proof: the CI matrix runs
+  `regime_pin` strict — its green **is** the universality claim.
+- **Spec freeze.** Any change to the chain's arithmetic — kernels, operation
+  order, contraction policy, warp blob — is a regime change: deliberate,
+  versioned, goldens re-derived from source. Never "improved" in place.
+
+*Versioning note.* Full-depth addresses of boundary-adjacent points move at
+nibble ≥ 26 relative to pre-pin macOS builds. This stays within 2.1.0 rather
+than forcing a major bump: no 2.x address has been published (v1.0.0 is the
+only external tag), working-depth bins and both anchor addresses are
+unchanged, and pre-pin full-depth tails were platform-dependent — there was
+no single address to preserve. The universality invariant starts here.
+
 ### Added — sphere-datum entry points (additive; no existing address moves)
 
 Ten `*_sphere` twins of the lon/lat entry points, for callers that own their

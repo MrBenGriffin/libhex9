@@ -5,10 +5,11 @@
 #   geoplegma — the hex9-sys Rust crate (cmake + bindgen), i.e. precisely what
 #               a GeoPlegma `cargo build` does on a user's machine.
 #
-# windows-mingw is experimental (continue-on-error): libhex9 embeds its warp
-# blob via GNU-as `.incbin`, so MSVC can never build it and MinGW is the only
-# native-Windows candidate. This job exists to find out whether that path
-# actually works; docs/building-on-windows.md is the user-facing story.
+# windows-mingw is BLOCKING: MSVC can never build libhex9 (GNU-as `.incbin`
+# warp embed), so MinGW is the native-Windows path — proven working 2026-07-27,
+# including strict regime_pin: Windows reproduces the goldens bit-for-bit.
+# The matrix as a whole enforces universality (same lon/lat → same uuid on
+# every platform); docs/building-on-windows.md is the user-facing story.
 
 name: CI
 
@@ -54,9 +55,8 @@ jobs:
         run: cargo test --locked
 
   windows-mingw:
-    name: windows (MinGW, experimental)
+    name: windows (MinGW)
     runs-on: windows-latest
-    continue-on-error: true
     defaults:
       run:
         shell: msys2 {0}
