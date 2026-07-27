@@ -195,7 +195,7 @@ def render(bins, layers, cvals, layout_name, out_png, title, by_owner=False):
     ax.axis('off')
     if title:
         ax.set_title(title, color='0.25')
-    fig.savefig(out_png, dpi=150, bbox_inches='tight', facecolor='white')
+    fig.savefig(out_png, dpi=400, bbox_inches='tight', facecolor='white')
     print(f"h9_net: wrote {out_png} ({len(patches)} cells, "
           f"layout {layout_name})")
 

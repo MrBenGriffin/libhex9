@@ -105,10 +105,10 @@ def main(argv=None) -> int:
                    default="both")
     p.add_argument("--png", action="store_true",
                    help="also render density PNGs (matplotlib)")
-    p.add_argument("--counts-layers", default="2:5", metavar="MIN:MAX")
+    p.add_argument("--counts-layers", default="1:9", metavar="MIN:MAX")
     p.add_argument("--counts-ceiling", type=float, default=60.0,
                    help="stars per cell before refining (default 60)")
-    p.add_argument("--flux-layers", default="2:8", metavar="MIN:MAX")
+    p.add_argument("--flux-layers", default="1:9", metavar="MIN:MAX")
     p.add_argument("--flux-ceiling", type=float, default=None,
                    help="Vega-flux per cell before refining "
                         "(default: total/200, printed)")
