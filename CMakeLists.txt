@@ -177,7 +177,7 @@ target_link_libraries(kring PRIVATE hex9)
 add_test(NAME kring COMMAND kring)
 
 add_executable(labels test/labels.c)
-target_link_libraries(labels PRIVATE hex9)
+target_link_libraries(labels PRIVATE hex9 m)
 add_test(NAME labels COMMAND labels)
 
 add_executable(adaptive test/adaptive.c)
@@ -227,7 +227,7 @@ add_test(NAME fund_warp COMMAND fund_warp)
 # End-to-end via-sphere chain vs the hhg9 Python reference (public ABI).
 # THE ORACLE: every frozen expectation in the suite is downstream of this one.
 add_executable(via_sphere test/via_sphere.c)
-target_link_libraries(via_sphere PRIVATE hex9)
+target_link_libraries(via_sphere PRIVATE hex9 m)
 target_compile_definitions(via_sphere PRIVATE
   H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME via_sphere COMMAND via_sphere)
@@ -237,7 +237,7 @@ add_test(NAME via_sphere COMMAND via_sphere)
 # octant corners. Covers the 88..90 deg pole x seam band that the hhg9 pytests
 # reach from neither side. Reference: tools/support/gen_pole_seam_ref.py.
 add_executable(pole_seam test/pole_seam.c)
-target_link_libraries(pole_seam PRIVATE hex9)
+target_link_libraries(pole_seam PRIVATE hex9 m)
 target_compile_definitions(pole_seam PRIVATE
   H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME pole_seam COMMAND pole_seam)
@@ -260,20 +260,20 @@ target_compile_definitions(gen_regime_pin PRIVATE
   H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(full_id test/full_id.c)
-target_link_libraries(full_id PRIVATE hex9)
+target_link_libraries(full_id PRIVATE hex9 m)
 add_test(NAME full_id COMMAND full_id)
 
 # w_oct 3D storage CRS: seamless round-trip, unit-octahedron invariant,
 # oid==sign(xyz), and b_oct<->xyz rotation round-trip.
 add_executable(woct test/woct.c)
-target_link_libraries(woct PRIVATE hex9)
+target_link_libraries(woct PRIVATE hex9 m)
 add_test(NAME woct COMMAND woct)
 
 # Great-circle adjacency validation against the encoder oracle (Ben's
 # "demonstrably safe ground" harness). Default 400 pts/circle keeps ctest
 # fast; soak-run by hand with a larger count, e.g. `gc_kring 5000`.
 add_executable(gc_kring test/gc_kring.c)
-target_link_libraries(gc_kring PRIVATE hex9)
+target_link_libraries(gc_kring PRIVATE hex9 m)
 add_test(NAME gc_kring COMMAND gc_kring)
 
 # Dev tool: derives/validates the k-ring seam algebra against the geometric
