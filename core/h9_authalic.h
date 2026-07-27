@@ -24,6 +24,7 @@
 #define H9_AUTHALIC_H
 
 #include <math.h>
+#include "h9_det_math.h" /* deterministic sin/cos — universality, not libm */
 
 #ifdef __cplusplus
 extern "C" {
@@ -114,14 +115,14 @@ static double h9_authalic_clenshaw(double szeta, double czeta,
 static double h9_geodetic_to_authalic(const H9Authalic *aux, double phi)
 {
     if (aux->sphere) return phi;
-    return phi + h9_authalic_clenshaw(sin(phi), cos(phi), aux->F_fwd);
+    return phi + h9_authalic_clenshaw(h9_sin(phi), h9_cos(phi), aux->F_fwd);
 }
 
 /* Authalic latitude ξ (radians) → geodetic φ (radians). */
 static double h9_authalic_to_geodetic(const H9Authalic *aux, double xi)
 {
     if (aux->sphere) return xi;
-    return xi + h9_authalic_clenshaw(sin(xi), cos(xi), aux->F_inv);
+    return xi + h9_authalic_clenshaw(h9_sin(xi), h9_cos(xi), aux->F_inv);
 }
 
 #ifdef __cplusplus

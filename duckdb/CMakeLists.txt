@@ -17,6 +17,14 @@ endif()
 
 include_directories(src/include "${HEX9_ROOT}" "${HEX9_ROOT}/core")
 
+# Determinism: same pin as the parent build (see libhex9/CMakeLists.txt).
+# This tree compiles the core chain itself, so it must carry the pin itself —
+# addresses computed by the DuckDB extension must be bit-identical to every
+# other consumer's, on every platform.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  add_compile_options(-ffp-contract=off)
+endif()
+
 # The three core sources are compiled directly (rather than linking the parent
 # build's hex9Static) so this extension builds from its own tree under the
 # extension-template CI, including the wasm targets.

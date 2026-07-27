@@ -42,6 +42,7 @@
 #include <limits>
 #include <math.h>
 #include <stdint.h>
+#include "h9_det_math.h" /* deterministic transcendentals — universality, not libm */
 
 /* Set to 1 to enable authalic warp (requires the heavy CT mesh headers).
  * Set to 0 during binning / hexgrid work until warp retraining is complete. */
@@ -239,13 +240,13 @@ static void h9_ak_core(double u, double v, double w,
                         double *x, double *y, double *z) {
     const double a  = H9_ALPHA;
     const double e  = H9_EPS;
-    const double tu = tan((M_PI * u + e) * 0.5);
-    const double tv = tan((M_PI * v + e) * 0.5);
-    const double tw = tan((M_PI * w + e) * 0.5);
+    const double tu = h9_tan((M_PI * u + e) * 0.5);
+    const double tv = h9_tan((M_PI * v + e) * 0.5);
+    const double tw = h9_tan((M_PI * w + e) * 0.5);
     const double u2 = tu*tu, v2 = tv*tv, w2 = tw*tw;
-    *x = tu * pow(v2 + w2 + a * w2 * v2, 0.25);
-    *y = tv * pow(u2 + w2 + a * u2 * w2, 0.25);
-    *z = tw * pow(u2 + v2 + a * u2 * v2, 0.25);
+    *x = tu * h9_qroot(v2 + w2 + a * w2 * v2);
+    *y = tv * h9_qroot(u2 + w2 + a * u2 * w2);
+    *z = tw * h9_qroot(u2 + v2 + a * u2 * v2);
 }
 
 /* Normalise raw XYZ to the unit sphere (a = b = 1). */
@@ -287,8 +288,8 @@ static void h9_c_oct_to_c_ell(double u, double v, double w,
 static void h9_c_ell_to_lonlat(double X, double Y, double Z,
                                 double *lon, double *lat) {
     const double p = sqrt(X*X + Y*Y);
-    *lon = atan2(Y, X);
-    *lat = atan2(Z, p);
+    *lon = h9_atan2(Y, X);
+    *lat = h9_atan2(Z, p);
 }
 
 /* Signed barycentric with explicit octant signs → lon/lat. */
@@ -361,7 +362,7 @@ static void h9_clamp_bary(double *fx, double *fy, int oct_mode) {
 static void h9_orient_fwd(double fx, double fy, int oct_i,
                            double *rx, double *ry) {
     const double th = H9_ORIENT_TH[oct_i ^ 7] * (M_PI / 3.0);  /* ^7: Python oid → C++ oct_i */
-    const double fc = cos(th), fs = sin(th);
+    const double fc = h9_cos(th), fs = h9_sin(th);
     *rx = fx * fc - fy * fs;
     *ry = fx * fs + fy * fc;
 }
@@ -370,7 +371,7 @@ static void h9_orient_fwd(double fx, double fy, int oct_i,
 static void h9_orient_inv(double rx, double ry, int oct_i,
                            double *fx, double *fy) {
     const double th = H9_ORIENT_TH[oct_i ^ 7] * (M_PI / 3.0);  /* ^7: Python oid → C++ oct_i */
-    const double fc = cos(th), fs = sin(th);
+    const double fc = h9_cos(th), fs = h9_sin(th);
     *fx =  rx * fc + ry * fs;
     *fy = -rx * fs + ry * fc;
 }
@@ -408,17 +409,17 @@ static void h9_braw_from_boct(H9BOct b, double *fx, double *fy) {
 
 /* Unit sphere, exact both ways. */
 static void h9_rad_lonlat_to_ecef(double lon_rad, double lat_rad, double *x, double *y, double *z) {
-	const double sin_lat = sin(lat_rad);
-	const double cos_lat = cos(lat_rad);
-	*x = cos_lat * cos(lon_rad);
-	*y = cos_lat * sin(lon_rad);
+	const double sin_lat = h9_sin(lat_rad);
+	const double cos_lat = h9_cos(lat_rad);
+	*x = cos_lat * h9_cos(lon_rad);
+	*y = cos_lat * h9_sin(lon_rad);
 	*z = sin_lat;
 }
 
 static void h9_ecef_to_rad_lonlat(double x, double y, double z, double *lon_rad, double *lat_rad) {
 	const double p = sqrt(x * x + y * y);
-	*lon_rad = atan2(y, x);
-	*lat_rad = atan2(z, p);
+	*lon_rad = h9_atan2(y, x);
+	*lat_rad = h9_atan2(z, p);
 }
 
 
@@ -439,7 +440,7 @@ static H9BOct h9_lonlat_to_boct_beam(double lon_rad, double lat_rad) {
 	double eX, eY, eZ;
 	h9_rad_lonlat_to_ecef(lon_rad, lat_rad, &eX, &eY, &eZ);
 
-	const double cl = cos(lat_rad);
+	const double cl = h9_cos(lat_rad);
 	result.oct_i = oid(eX, eY, eZ);
 	result.oct_mode = mode(result.oct_i);
 
@@ -518,9 +519,9 @@ static H9BOct h9_lonlat_to_boct_beam(double lon_rad, double lat_rad) {
                 double dlon = lon0 - lon_rad;
                 if (dlon >  M_PI) dlon -= 2.0*M_PI;
                 if (dlon < -M_PI) dlon += 2.0*M_PI;
-                const double sl = sin(dlat * 0.5), sd = sin(dlon * 0.5);
+                const double sl = h9_sin(dlat * 0.5), sd = h9_sin(dlon * 0.5);
                 nxt[nn++] = {chld_mode[j], cx, cy,
-                             sl*sl + cos_lat * cos(lat0) * sd*sd};
+                             sl*sl + cos_lat * h9_cos(lat0) * sd*sd};
             }
         }
         int bw_new = (nn < BEAM) ? nn : BEAM;
@@ -655,16 +656,16 @@ static inline void h9_aj_ak_fwd_jac(double u, double v, double w,
                                     double P[3], double dPdc[3][3]) {
     const double a = H9_ALPHA;
     const double hp = M_PI * 0.5;
-    const double tu = tan(hp*u + 0.5*H9_EPS);
-    const double tv = tan(hp*v + 0.5*H9_EPS);
-    const double tw = tan(hp*w + 0.5*H9_EPS);
+    const double tu = h9_tan(hp*u + 0.5*H9_EPS);
+    const double tv = h9_tan(hp*v + 0.5*H9_EPS);
+    const double tw = h9_tan(hp*w + 0.5*H9_EPS);
     const double u2 = tu*tu, v2 = tv*tv, w2 = tw*tw;
     const double pu = hp*(1.0+u2), pv = hp*(1.0+v2), pw = hp*(1.0+w2);   /* dt/dcoord */
 
     const double Sx = v2 + w2 + a*v2*w2;
     const double Sy = u2 + w2 + a*u2*w2;
     const double Sz = u2 + v2 + a*u2*v2;
-    const double Px = pow(Sx, 0.25), Py = pow(Sy, 0.25), Pz = pow(Sz, 0.25);
+    const double Px = h9_qroot(Sx), Py = h9_qroot(Sy), Pz = h9_qroot(Sz);
     const double xr = tu*Px, yr = tv*Py, zr = tw*Pz;
 
     const double qx = 0.25*Px/Sx, qy = 0.25*Py/Sy, qz = 0.25*Pz/Sz;     /* ¼ S^{-¾} */

@@ -43,6 +43,19 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# ── Determinism: pinned FP contraction ──────────────────────────────────────
+# The encode chain's floating-point program IS the address definition — the
+# same lon/lat must yield the same uuid on every platform (universality,
+# 2026-07-27). Transcendentals are already owned (core/h9_det_math.h); the
+# remaining nondeterminism is compiler FMA contraction: arm64 clang fuses
+# a*b+c by default, x86-64 cannot, and regime_pin caught the difference as
+# platform-dependent deep-nibble flips. Pinning contraction OFF makes the
+# arithmetic identical everywhere. Do NOT relax per-target "for speed" — a
+# fused multiply-add changes addresses, which is a regime change.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  add_compile_options(-ffp-contract=off)
+endif()
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
