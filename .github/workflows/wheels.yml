@@ -8,9 +8,8 @@
 # this workflow file. Until then, build/test runs work and the publish jobs
 # are the only thing that fails — flip the switch when ready.
 #
-# windows job: continue-on-error until the first green run (the MSVC path is
-# CI-proven for the DuckDB extension; the wheel is its first outing here),
-# then promote — same pattern the main CI's windows job followed.
+# All platforms blocking — windows-MSVC proved itself green on its first two
+# runs (2026-07-28), universality pins included.
 
 name: wheels
 
@@ -36,9 +35,7 @@ jobs:
           - os: ubuntu-24.04-arm     # manylinux aarch64
           - os: macos-15             # macOS arm64
           - os: windows-latest       # win amd64 (MSVC + generated-TU embed)
-            experimental: true
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental || false }}
     steps:
       - uses: actions/checkout@v4
       - uses: pypa/cibuildwheel@v3.2
