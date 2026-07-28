@@ -93,11 +93,39 @@ if(NOT EXISTS "${H9_WARP_BLOB_PATH}")
     "    python tools/support/export_warp_fund_v4.py")
 endif()
 
+# ── Warp embed: .incbin (default) vs generated TU (MSVC / opt-in) ───────────
+# core/h9_warp_embedded.cpp embeds the blob with GNU-as `.incbin`, which MSVC
+# cannot compile. Swap in a generated TU carrying the same h9:: symbols
+# (array style for MSVC — its string literals cap at 64 KB). Same mechanism
+# as the DuckDB extension tree; the generator script is shared. Runtime is
+# identical either way: bytes in .rodata, no file load.
+option(HEX9_EMBED_PORTABLE "Use the generated (no-.incbin) warp embed TU" OFF)
+set(H9_WARP_EMBED_SRC core/h9_warp_embedded.cpp)
+if(MSVC OR HEX9_EMBED_PORTABLE)
+  set(H9_WARP_EMBED_SRC "${CMAKE_CURRENT_BINARY_DIR}/h9_warp_embedded_gen.cpp")
+  if(NOT EXISTS "${H9_WARP_EMBED_SRC}")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    if(MSVC)
+      set(_h9_embed_style "--array")
+    else()
+      set(_h9_embed_style "")
+    endif()
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/duckdb/scripts/gen_warp_embed.py"
+              "${H9_WARP_BLOB_PATH}" "${H9_WARP_EMBED_SRC}" ${_h9_embed_style}
+      RESULT_VARIABLE _h9_embed_rc)
+    if(NOT _h9_embed_rc EQUAL 0)
+      message(FATAL_ERROR "libhex9: gen_warp_embed.py failed (${_h9_embed_rc})")
+    endif()
+  endif()
+endif()
+
 # ── libhex9 shared library ──────────────────────────────────────────────────
 add_library(hex9 SHARED
   hex9_c.cpp
   core/h9_warp_runtime.cpp
-  core/h9_warp_embedded.cpp)
+  ${H9_WARP_EMBED_SRC})
 
 target_include_directories(hex9
   PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -131,7 +159,7 @@ endif()
 add_library(hex9Static STATIC
   hex9_c.cpp
   core/h9_warp_runtime.cpp
-  core/h9_warp_embedded.cpp)
+  ${H9_WARP_EMBED_SRC})
 target_include_directories(hex9Static
   PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -141,12 +169,27 @@ target_compile_definitions(hex9Static PRIVATE
   H9_WARP_BLOB="${H9_WARP_BLOB_PATH}")
 set_target_properties(hex9Static PROPERTIES OUTPUT_NAME hex9 POSITION_INDEPENDENT_CODE ON)
 
+if(MSVC)
+  # M_PI et al. hide behind this on MSVC (no-op elsewhere).
+  target_compile_definitions(hex9 PRIVATE _USE_MATH_DEFINES)
+  target_compile_definitions(hex9Static PRIVATE _USE_MATH_DEFINES)
+endif()
+
+# ── Wheel mode ──────────────────────────────────────────────────────────────
+# Driven by pyproject.toml (scikit-build-core): builds ONLY the nanobind
+# module as hex9/_core, statically linked (self-contained — no shared lib to
+# bundle, no OpenMP: serial-correct, the archive's doctrine), and installs
+# nothing else. The `hex9` python package sources live in python/hex9/.
+option(HEX9_WHEEL "Build for a Python wheel (hex9._core; no lib/header installs)" OFF)
+
 # ── install (cross-platform) ────────────────────────────────────────────────
-install(TARGETS hex9 hex9Static
-  LIBRARY        DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  ARCHIVE        DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  RUNTIME        DESTINATION ${CMAKE_INSTALL_BINDIR}
-  PUBLIC_HEADER  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+if(NOT HEX9_WHEEL)
+  install(TARGETS hex9 hex9Static
+    LIBRARY        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME        DESTINATION ${CMAKE_INSTALL_BINDIR}
+    PUBLIC_HEADER  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
 
 # ── tests ────────────────────────────────────────────────────────────────────
 enable_testing()
@@ -346,13 +389,25 @@ if(HEX9_PYTHON)
     endif()
   endif()
   if(nanobind_FOUND)
-    nanobind_add_module(hex9_ext STABLE_ABI python/hex9_ext.cpp)
-    target_link_libraries(hex9_ext PRIVATE hex9)
-    message(STATUS "libhex9: nanobind Python module enabled")
-    add_test(NAME smoke_py
-             COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/smoke.py)
-    set_tests_properties(smoke_py PROPERTIES
-             ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:hex9_ext>")
+    if(HEX9_WHEEL)
+      # Wheel target: import name hex9._core, static core, self-contained.
+      nanobind_add_module(_core STABLE_ABI python/hex9_ext.cpp)
+      target_compile_definitions(_core PRIVATE HEX9_PY_MODULE=_core)
+      if(MSVC)
+        target_compile_definitions(_core PRIVATE _USE_MATH_DEFINES)
+      endif()
+      target_link_libraries(_core PRIVATE hex9Static)
+      install(TARGETS _core LIBRARY DESTINATION hex9)
+      message(STATUS "libhex9: wheel module hex9._core enabled")
+    else()
+      nanobind_add_module(hex9_ext STABLE_ABI python/hex9_ext.cpp)
+      target_link_libraries(hex9_ext PRIVATE hex9)
+      message(STATUS "libhex9: nanobind Python module enabled")
+      add_test(NAME smoke_py
+               COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/smoke.py)
+      set_tests_properties(smoke_py PROPERTIES
+               ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:hex9_ext>")
+    endif()
   else()
     message(STATUS "libhex9: nanobind not found — skipping Python module "
                    "(pip install nanobind to enable)")

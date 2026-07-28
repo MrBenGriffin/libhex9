@@ -558,7 +558,15 @@ static nb::tuple adaptive(u8_2d_in uuids, int min_layer, int max_layer,
         nb::ndarray<nb::numpy, int64_t, nb::ndim<1>>(as, {n}, as_o));
 }
 
-NB_MODULE(hex9_ext, m) {
+/* Module name is compile-time selectable: the in-tree module stays hex9_ext
+ * (tests, embedders); the PyPI wheel builds this same TU as hex9._core
+ * (-DHEX9_PY_MODULE=_core). Double-expansion so the macro argument resolves
+ * before NB_MODULE's token pasting. */
+#ifndef HEX9_PY_MODULE
+#define HEX9_PY_MODULE hex9_ext
+#endif
+#define H9_NB_MODULE_(name, variable) NB_MODULE(name, variable)
+H9_NB_MODULE_(HEX9_PY_MODULE, m) {
     m.doc() = "libhex9 — Hex9 DGGS fast backend (nanobind + OpenMP).";
     m.def("version", &hex9_version);
     m.def("lmax", &hex9_lmax, "Deepest addressable layer (29 legacy / 30 reclaimed).");
