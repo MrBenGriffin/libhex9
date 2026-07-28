@@ -6,7 +6,7 @@ require hex9
 
 # hex9_version() is "libhex9 <ver> (<build date>)" — pin the version token only
 query I
-SELECT h9_version() LIKE 'libhex9 2.2.0 (%';
+SELECT h9_version() LIKE 'libhex9 2.2.1 (%';
 ----
 true
 

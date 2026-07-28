@@ -26,8 +26,11 @@
  *   - Layer is 0..29 (h9_bin), 1..29 (cell/grid). The core validates and
  *     returns an error rather than asserting.
  *
- * Part of the Hex9 (H9) Project. Licensed under the GNU GPL v2 or later
- * (to match PostGIS; supersedes the development-era Apache-2.0 header).
+ * Part of the Hex9 (H9) Project. Licensed under the Apache License 2.0
+ * (see LICENSE and COPYRIGHT — the canonical statements for the work).
+ * Apache-2.0 is one-way GPL-compatible, so the GPL'd PostGIS extension may
+ * link this core freely; an earlier note here claiming GPL "to match
+ * PostGIS" predated that understanding and was an error.
  **********************************************************************/
 
 #ifndef HEX9_C_H
@@ -57,10 +60,10 @@ extern "C" {
  * invisible in the data. Consumers that persist addresses SHOULD refuse to
  * start on a mismatch: see postgis_hex9's _PG_init for the pattern.
  */
-#define HEX9_VERSION       "2.2.0"
+#define HEX9_VERSION       "2.2.1"
 #define HEX9_VERSION_MAJOR 2
 #define HEX9_VERSION_MINOR 2
-#define HEX9_VERSION_PATCH 0
+#define HEX9_VERSION_PATCH 1
 
 /* ── Lifecycle / configuration ─────────────────────────────────────────────
  *

@@ -10,6 +10,21 @@ address.
 
 ---
 
+## [2.2.1] — 2026-07-28
+
+### Fixed — packaging and metadata only; no code, no address moves
+
+- PyPI storefront: the `hex9` package now carries its own README
+  (`python/README.pypi.md` — the Python package's contract, including what
+  it is *not*: it contains no hhg9 code) instead of libhex9's C-library
+  README, which 2.2.0 shipped by accident.
+- `hex9_c.h`: corrected a stale header comment claiming GPL-2.0-or-later —
+  the work is Apache-2.0 (LICENSE/COPYRIGHT are canonical); Apache-2.0 is
+  one-way GPL-compatible, so the PostGIS extension never needed the core to
+  be GPL.
+- TestPyPI publishes tolerate re-dispatch at an existing version
+  (`skip-existing`); real PyPI stays strict.
+
 ## [2.2.0] — 2026-07-28
 
 ### Added — face-coordinate addressing (bring your own ⟨polyhedron⟩)
