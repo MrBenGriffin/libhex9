@@ -74,6 +74,10 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          # Re-dispatches at an already-published version are dress
+          # rehearsals, not errors (TestPyPI is the sandbox; real PyPI
+          # duplicates should still scream).
+          skip-existing: true
 
   publish_pypi:
     name: publish (PyPI)
