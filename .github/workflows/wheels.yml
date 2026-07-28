@@ -1,0 +1,94 @@
+# PyPI wheels: built and TESTED per platform by cibuildwheel — every wheel
+# must pass test/wheel_pin.py (frozen universality goldens) on its native
+# platform before anything ships. Release = push a v* tag.
+#
+# Publishing uses PyPI "trusted publishing" (OIDC — no stored tokens): the
+# environments below must be configured once, by the project owner, on
+# pypi.org (and test.pypi.org) as trusted publishers of this repository +
+# this workflow file. Until then, build/test runs work and the publish jobs
+# are the only thing that fails — flip the switch when ready.
+#
+# windows job: continue-on-error until the first green run (the MSVC path is
+# CI-proven for the DuckDB extension; the wheel is its first outing here),
+# then promote — same pattern the main CI's windows job followed.
+
+name: wheels
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - .github/workflows/wheels.yml
+      - python/**
+      - test/wheel_pin.py
+
+jobs:
+  build_wheels:
+    name: wheels (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest        # manylinux x86_64
+          - os: ubuntu-24.04-arm     # manylinux aarch64
+          - os: macos-15             # macOS arm64
+          - os: windows-latest       # win amd64 (MSVC + generated-TU embed)
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v3.2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  build_sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  # Dry-run channel: manually dispatched, publishes to TestPyPI. Do this
+  # first, `pip install -i https://test.pypi.org/simple/ hex9` on a clean
+  # machine, then tag for the real thing.
+  publish_testpypi:
+    name: publish (TestPyPI)
+    if: github.event_name == 'workflow_dispatch'
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish_pypi:
+    name: publish (PyPI)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,0 +1,82 @@
+# hex9 — PyPI wheel packaging over the existing CMake build (scikit-build-core
+# drives CMakeLists.txt with HEX9_WHEEL=ON; the wheel contains the hex9 python
+# package plus the statically-linked hex9/_core nanobind module and nothing
+# else). Wheels are built/tested per platform by cibuildwheel
+# (.github/workflows/wheels.yml); every wheel must pass test/wheel_pin.py —
+# frozen universality goldens — before it can ship.
+
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.1"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "hex9"
+dynamic = ["version"]
+description = "Hex9 / H9 discrete global grid system — deterministic aperture-9 hexagonal addressing on the AKW octahedral equal-area projection"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Ben Griffin", email = "ben@redsnapper.net" }]
+dependencies = ["numpy>=1.24"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C++",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+]
+
+[project.urls]
+Repository = "https://github.com/MrBenGriffin/libhex9"
+Changelog = "https://github.com/MrBenGriffin/libhex9/blob/main/CHANGELOG.md"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+wheel.packages = ["python/hex9"]
+build.targets = ["_core"]
+
+[tool.scikit-build.cmake.define]
+HEX9_WHEEL = "ON"
+HEX9_PYTHON = "ON"
+
+# Single-source the version from the public header (the CMake build asserts
+# header == project version, so this is THE version).
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "hex9_c.h"
+regex = '#define\s+HEX9_VERSION\s+"(?P<value>[^"]+)"'
+
+# The sdist is the honest source fallback; exclude the heavyweight research /
+# vendored / generated trees (the working repo carries ~3 GB that no source
+# build needs). tools/ stays except its training-data subtree — CMake
+# references tools/*.c and tools/diagnosis/ at configure time.
+[tool.scikit-build.sdist]
+exclude = [
+  "thought/",
+  "test_data/",
+  "tools/support/",
+  "duckdb/duckdb/",
+  "duckdb/extension-ci-tools/",
+  "duckdb/build/",
+  "duckdb_unittest_tempdir/",
+  "geoplegma/target/",
+  "build/",
+  ".github/",
+]
+
+[tool.cibuildwheel]
+build = ["cp310-*", "cp311-*", "cp312-*"]
+# musl/i686/win32: no audience, no prebuilds — pip falls back to the sdist.
+skip = ["*-musllinux_*", "*_i686", "*-win32"]
+test-requires = ["numpy"]
+test-command = "python {project}/test/wheel_pin.py"
+build-verbosity = 1
+
+# 3.12+ builds once per platform against the stable ABI (nanobind emits
+# abi3 from cp312), covering every future CPython.
+[[tool.cibuildwheel.overrides]]
+select = "cp312-*"
+config-settings."wheel.py-api" = "cp312"
