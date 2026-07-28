@@ -109,6 +109,78 @@ static nb::tuple unproject(f64_1d cx, f64_1d cy, i32_1d oid, bool sphere) {
         nb::ndarray<nb::numpy, double, nb::ndim<1>>(lat, {n}, lat_o));
 }
 
+/* encode_boct(cx[n], cy[n], oid[n]) -> uint8[n,16] — mint addresses from
+ * face coordinates directly (bring-your-own-projection; see hex9_c.h
+ * doctrine block: the resulting addresses are NON-CANONICAL unless the
+ * inputs came from hex9's own projection). */
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
+encode_boct(f64_1d cx, f64_1d cy, i32_1d oid) {
+    const size_t n = cx.shape(0);
+    if (cy.shape(0) != n || oid.shape(0) != n)
+        throw std::runtime_error("cx, cy and oid must be the same length");
+    uint8_t *out = new uint8_t[n * 16];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = hex9_encode_boct_many(cx.data(), cy.data(),
+                                   (const int *)oid.data(), n, out);
+    }
+    if (rc) { delete[] out; throw std::runtime_error("encode_boct: invalid input (oid range / non-finite)"); }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
+/* decode_boct(uuid[n,16]) -> (cx[n], cy[n], oid[n]) — cell centroids in
+ * face coordinates (projection-free). */
+static nb::tuple decode_boct(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    double *cx = new double[n];
+    double *cy = new double[n];
+    int32_t *oid = new int32_t[n];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = hex9_decode_boct_many(uuid.data(), n, cx, cy, (int *)oid);
+    }
+    if (rc) { delete[] cx; delete[] cy; delete[] oid;
+              throw std::runtime_error("decode_boct: malformed uuid"); }
+    nb::capsule cx_o(cx, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    nb::capsule cy_o(cy, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    nb::capsule oid_o(oid, [](void *p) noexcept { delete[] static_cast<int32_t *>(p); });
+    return nb::make_tuple(
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(cx, {n}, cx_o),
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(cy, {n}, cy_o),
+        nb::ndarray<nb::numpy, int32_t, nb::ndim<1>>(oid, {n}, oid_o));
+}
+
+/* cell_ring_boct(uuid[16], layer, densify) -> (cx[k], cy[k], oid[k]) —
+ * one cell's closed boundary ring in face coordinates, per-vertex frames. */
+static nb::tuple cell_ring_boct(u8_2d_in uuid, int layer, int densify) {
+    if (uuid.shape(0) != 1 || uuid.shape(1) != 16)
+        throw std::runtime_error("uuid array must be (1, 16) — one cell per call");
+    const int k = hex9_ring_npoints(densify);
+    if (k < 0) throw std::runtime_error("densify out of range");
+    double *cx = new double[(size_t)k];
+    double *cy = new double[(size_t)k];
+    int32_t *oid = new int32_t[(size_t)k];
+    int got;
+    {
+        nb::gil_scoped_release release;
+        got = hex9_cell_ring_boct(uuid.data(), layer, densify,
+                                  cx, cy, (int *)oid, k);
+    }
+    if (got != k) { delete[] cx; delete[] cy; delete[] oid;
+                    throw std::runtime_error("cell_ring_boct: bad layer/uuid"); }
+    nb::capsule cx_o(cx, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    nb::capsule cy_o(cy, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    nb::capsule oid_o(oid, [](void *p) noexcept { delete[] static_cast<int32_t *>(p); });
+    return nb::make_tuple(
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(cx, {(size_t)k}, cx_o),
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(cy, {(size_t)k}, cy_o),
+        nb::ndarray<nb::numpy, int32_t, nb::ndim<1>>(oid, {(size_t)k}, oid_o));
+}
+
 /* cell_uv(uuid[n,16], layers[n]) -> (c_ia, c_ib, c_oid, v_ia[n,6],
  * v_ib[n,6], v_oid[n,6], ext) — the integer lattice identity surface.
  * Datum-free; vertex keys are canonical pool keys (see hex9_c.h). */
@@ -515,6 +587,21 @@ NB_MODULE(hex9_ext, m) {
           nb::arg("sphere") = false,
           "Exact inverse of project: (cx, cy, oid) arrays -> (lon, lat). "
           "sphere=True emits spherical degrees.");
+    m.def("encode_boct", &encode_boct, nb::arg("cx"), nb::arg("cy"), nb::arg("oid"),
+          "Mint addresses from face coordinates (cx, cy, oid) directly — the "
+          "bring-your-own-projection entry (the (face)(cell) layers without "
+          "AKW). Addresses minted from a non-hex9 projection are NON-CANONICAL: "
+          "same uuid space, different meaning. Projection identity is dataset "
+          "metadata; never mix projections within one dataset.");
+    m.def("decode_boct", &decode_boct, nb::arg("uuid"),
+          "Cell centroids in face coordinates (cx, cy, oid) — the same "
+          "centroid decode() unprojects, emitted before unprojection. "
+          "Projection-free.");
+    m.def("cell_ring_boct", &cell_ring_boct, nb::arg("uuid"),
+          nb::arg("layer"), nb::arg("densify") = 0,
+          "One cell's closed boundary ring in face coordinates: (cx, cy, oid) "
+          "arrays, per-vertex frames (each vertex in the chart of ITS oid). "
+          "Projection-free — render through your own inverse.");
     m.def("cell_uv", &cell_uv, nb::arg("uuid"), nb::arg("layers"),
           "Integer lattice identity of each (n,16) bin at layers[n]: "
           "(c_ia, c_ib, c_oid, v_ia[n,6], v_ib[n,6], v_oid[n,6], ext). "

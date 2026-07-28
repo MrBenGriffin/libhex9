@@ -100,6 +100,29 @@ static inline void identity_vertices(const h9kring::H9CellId &id, int layer,
         resolve_uv_frame(s, &pu[v], &pv[v], &poid[v]);
 }
 
+/* Face-coordinate centroid — the same lattice construction as
+ * identity_centroid but WITHOUT the unprojection: emits (cx, cy) in the
+ * chart of id.oid. Projection-free by construction; this is the ⟨face⟩-layer
+ * output for bring-your-own-projection consumers (hex9_decode_boct). */
+static inline bool identity_centroid_boct(const h9kring::H9CellId &id, int layer,
+                                          double *cx, double *cy, int *oid) {
+    const double div_f = std::pow(3.0, (double)layer);
+    if (!id.ext) {
+        *cx = (double)(id.ia + h9kring::H9KR_C2_DU[id.c2]) * H9_UV_U1 / div_f;
+        *cy = (double)(id.ib + h9kring::H9KR_C2_DV[id.c2]) * H9_UV_V3 / div_f;
+    } else {
+        int64_t su = 0, sv = 0;
+        for (int v = 0; v < 4; v++) {
+            su += (int64_t)H9_HI[0][id.c2][v][0] + id.ia;
+            sv += (int64_t)H9_HI[0][id.c2][v][1] + id.ib;
+        }
+        *cx = (double)su * H9_UV_U1 / (4.0 * div_f);
+        *cy = (double)sv * H9_UV_V3 / (4.0 * div_f);
+    }
+    *oid = id.oid;
+    return true;
+}
+
 /* Geographic centroid, grid convention: the lattice centroid (== the
  * mode-matching 6-vertex mean) for whole cells; the 4-own-vertex mean for
  * ext half-hexes. Matches H9GridCell::cen_lon/cen_lat exactly. */
@@ -189,6 +212,60 @@ static inline int identity_ring(const h9kring::H9CellId &id, int layer, int dens
     }
     lons[n_ring - 1] = lons[0]; lats[n_ring - 1] = lats[0];
     normalize_ring(lons, lats, n_ring);
+    return n_ring;
+}
+
+/* Face-coordinate ring — identity_ring's construction with the unprojection
+ * removed: emits (cx, cy, oid) per vertex, each in the chart of ITS oid
+ * (per-vertex frames — the same seam-reflection frame choice identity_ring
+ * feeds cxcy_to_lonlat). Projection-free; ⟨face⟩-layer output for
+ * bring-your-own-projection consumers (hex9_cell_ring_boct). Closed ring:
+ * last point repeats the first. Returns the point count, or -1 on error. */
+static inline int identity_ring_boct(const h9kring::H9CellId &id, int layer,
+                                     int densify,
+                                     double *cxs, double *cys, int *oids) {
+    if (layer < 0 || layer > H9_LMAX) return -1;
+    if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
+    int n_ring = 1;
+    for (int i = 0; i < densify; ++i) n_ring *= 3;
+    const int v_per_edge = n_ring;
+    n_ring = 6 * n_ring + 1;
+
+    int64_t pu[6], pv[6];
+    int     poid[6];
+    identity_vertices(id, layer, pu, pv, poid);
+
+    const double div_f = std::pow(3.0, (double)layer);
+    if (densify == 0) {
+        for (int v = 0; v < 6; ++v) {
+            cxs[v]  = (double)pu[v] * H9_UV_U1 / div_f;
+            cys[v]  = (double)pv[v] * H9_UV_V3 / div_f;
+            oids[v] = poid[v];
+        }
+        cxs[6] = cxs[0]; cys[6] = cys[0]; oids[6] = oids[0];
+        return 7;
+    }
+    int n = 0;
+    for (int e = 0; e < 6; ++e) {
+        const int en = (e + 1) % 6;
+        const int oa = poid[e], ob = poid[en];
+        const int mo_a = (int)H9_OID_MO[oa], mo_b = (int)H9_OID_MO[ob];
+        int64_t ua = pu[e], va = pv[e], ub = pu[en], vb = pv[en];
+        int frame_oid;
+        if (oa == ob || mo_a == mo_b) frame_oid = oa;
+        else if (mo_a == 0) { frame_oid = ob; va = -va; }
+        else                { frame_oid = oa; vb = -vb; }
+        const double cxa = (double)ua * H9_UV_U1 / div_f, cya = (double)va * H9_UV_V3 / div_f;
+        const double cxb = (double)ub * H9_UV_U1 / div_f, cyb = (double)vb * H9_UV_V3 / div_f;
+        for (int s = 0; s < v_per_edge; ++s) {
+            const double t = (double)s / (double)v_per_edge;
+            cxs[n]  = cxa + (cxb - cxa) * t;
+            cys[n]  = cya + (cyb - cya) * t;
+            oids[n] = frame_oid;
+            ++n;
+        }
+    }
+    cxs[n_ring - 1] = cxs[0]; cys[n_ring - 1] = cys[0]; oids[n_ring - 1] = oids[0];
     return n_ring;
 }
 

@@ -805,23 +805,18 @@ static inline void uuid_from_cxcy(double cen_cx, double cen_cy,
  * Phase 2 will replace that with a port of Python region.py::_recover
  * (~150 LOC, removes the residual L13+ collision tail).  Phase 1 here
  * delivers the encoder-dispatch infrastructure so the rest can be A/B'd. */
-static inline void uuid_from_cxcy_full(double cen_cx, double cen_cy,
-                                        int oid, uint8_t out[16])
+/* Descent from the WARPED chart (b_oct) — the frame hex9_project /
+ * hex9_woct_to_boct emit and the identity lattice lives in. This is the
+ * bring-your-own-projection seam (hex9_encode_boct enters here directly);
+ * uuid_from_cxcy_full below is the BRAW-in twin, bridging via h9_warp_inv. */
+static inline void uuid_from_boct_full(double b_cx, double b_cy,
+                                       int oid, uint8_t out[16])
 {
     const int    oct_mode = (int)H9_OID_MO[oid];
     const double R3       = std::sqrt(3.0);
 
-    double cx = cen_cx;
-    double cy = cen_cy;
-#if H9_WARP_ENABLE
-    /* See uuid_from_cxcy above for rationale — descent runs on
-     * warp_inv(BRAW) to match Python b_oct.encode. */
-    {
-        double bx, by;
-        h9_warp_inv(cx, cy, oct_mode, &bx, &by);
-        cx = bx; cy = by;
-    }
-#endif
+    double cx = b_cx;
+    double cy = b_cy;
     h9_preamble_nudge(&cx, &cy, oct_mode);
 
     uint8_t cids[37] = {};
@@ -883,6 +878,21 @@ static inline void uuid_from_cxcy_full(double cen_cx, double cen_cy,
     const uint8_t p_mo_final = rids[H9_NIB_BODYTOP] & 1u;
     nibbles[H9_NIB_TAIL] = (uint8_t)((p_mo_final << 3) | (last_c2 << 1) | (uint8_t)oct_mode);
     h9a_pack(nibbles, out);
+}
+
+/* BRAW-in twin: the frame lonlatdeg_to_cxcy_oid emits. Bridges to the warped
+ * chart with h9_warp_inv (see uuid_from_cxcy above for rationale — descent
+ * runs on warp_inv(BRAW) to match Python b_oct.encode), then descends. */
+static inline void uuid_from_cxcy_full(double cen_cx, double cen_cy,
+                                       int oid, uint8_t out[16])
+{
+#if H9_WARP_ENABLE
+    double bx, by;
+    h9_warp_inv(cen_cx, cen_cy, (int)H9_OID_MO[oid], &bx, &by);
+    uuid_from_boct_full(bx, by, oid, out);
+#else
+    uuid_from_boct_full(cen_cx, cen_cy, oid, out);
+#endif
 }
 
 struct ClipNode { int mode; int64_t ia, ib, scale; };

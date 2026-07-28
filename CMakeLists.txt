@@ -20,7 +20,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum macOS version libhex9 targets (match your PostgreSQL's)")
 endif()
 
-project(libhex9 VERSION 2.1.0 LANGUAGES CXX C)
+project(libhex9 VERSION 2.2.0 LANGUAGES CXX C)
 
 # ── Version consistency ─────────────────────────────────────────────────────
 # HEX9_VERSION in the public header is hand-maintained (the header is shipped
@@ -275,6 +275,13 @@ target_compile_definitions(gen_regime_pin PRIVATE
 add_executable(full_id test/full_id.c)
 target_link_libraries(full_id PRIVATE hex9 m)
 add_test(NAME full_id COMMAND full_id)
+
+# Face-coordinate (bring-your-own-projection) surface: the boct seam is
+# byte-identical to the canonical chain, both 2D and 3D routes; centroids
+# and rings cohere with their lon/lat twins through unproject.
+add_executable(boct_io test/boct_io.c)
+target_link_libraries(boct_io PRIVATE hex9 m)
+add_test(NAME boct_io COMMAND boct_io)
 
 # w_oct 3D storage CRS: seamless round-trip, unit-octahedron invariant,
 # oid==sign(xyz), and b_oct<->xyz rotation round-trip.

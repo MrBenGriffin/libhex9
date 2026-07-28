@@ -57,9 +57,9 @@ extern "C" {
  * invisible in the data. Consumers that persist addresses SHOULD refuse to
  * start on a mismatch: see postgis_hex9's _PG_init for the pattern.
  */
-#define HEX9_VERSION       "2.1.0"
+#define HEX9_VERSION       "2.2.0"
 #define HEX9_VERSION_MAJOR 2
-#define HEX9_VERSION_MINOR 1
+#define HEX9_VERSION_MINOR 2
 #define HEX9_VERSION_PATCH 0
 
 /* ── Lifecycle / configuration ─────────────────────────────────────────────
@@ -406,6 +406,41 @@ int  hex9_boct_to_woct_many(const double *cx, const double *cy, const int *oid,
                             size_t n, double *xyz);
 int  hex9_woct_to_boct_many(const double *xyz, size_t n,
                             double *cx, double *cy, int *oid);
+
+/* ── Face-coordinate addressing — bring your own ⟨polyhedron⟩ ───────────────
+ * The ⟨face⟩⟨cell⟩ layers exposed directly at the (cx, cy, oid) chart, for
+ * callers who supply their OWN sphere→octahedron projection (research
+ * projections, AKW-comparison studies, coordinates from no sphere at all).
+ * Descent is projection-blind; every downstream operation (bins, lineage,
+ * k-rings, curve) works unchanged.
+ *
+ * DOCTRINE — non-canonical addresses. A uuid minted here means "this cell
+ * under the CALLER's projection", not AKW's, yet is bit-indistinguishable
+ * from a canonical address (no spare bits mark it — deliberately). The
+ * projection identity is dataset metadata, exactly as the sphere/WGS84 datum
+ * is: never mix projections within one dataset. See docs/projection.md.
+ *
+ * The (cx, cy) contract is hex9's face chart — the values hex9_project /
+ * hex9_woct_to_boct emit. Guarantees split at this seam: ⟨face⟩⟨cell⟩ is
+ * deterministic (universality); everything upstream is the caller's.
+ *
+ * encode: always the grid-canonical containment descent (hex9_set_encoder
+ * does not apply). decode: the cell's lattice centroid at the uuid's bin
+ * layer, in the chart of the returned oid — the same centroid hex9_decode
+ * unprojects, emitted before unprojection. cell_ring: (cx, cy, oid) per
+ * vertex, per-vertex frames (each vertex in the chart of ITS oid); closed
+ * ring of hex9_ring_npoints(densify) points. Returns: 0 on success (ring:
+ * point count, -1 on error); _many forms OR the per-item results. */
+int  hex9_encode_boct(double cx, double cy, int oid, uint8_t out_uuid[16]);
+int  hex9_encode_boct_many(const double *cx, const double *cy, const int *oid,
+                           size_t n, uint8_t *out_uuid);
+int  hex9_decode_boct(const uint8_t uuid[16],
+                      double *cx, double *cy, int *oid);
+int  hex9_decode_boct_many(const uint8_t *uuid, size_t n,
+                           double *cx, double *cy, int *oid);
+int  hex9_cell_ring_boct(const uint8_t uuid[16], int layer, int densify,
+                         double *out_cx, double *out_cy, int *out_oid,
+                         int max_points);
 
 /* ── Labels ────────────────────────────────────────────────────────────────
  * Write a NUL-terminated label for the UUID at `layer` into buf. Returns the

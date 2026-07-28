@@ -40,29 +40,59 @@ static int g_encoder_mode = 1;
 /* Shared scalar kernels — the single source of truth for one item, called by
  * both the scalar API and the batch loops (so batch == scalar by construction).
  * Must stay reentrant: locals only, read-only warp state + g_encoder_mode. */
-static inline void encode_one(double lon, double lat, uint8_t out[16],
-                              const H9Authalic *aux = &h9_g_authalic) {
-    if (g_encoder_mode == 1) {
-        double cx, cy; int oid;
-        h9grid::lonlatdeg_to_cxcy_oid(lon, lat, &cx, &cy, &oid, aux);
-        h9grid::uuid_from_cxcy_full(cx, cy, oid, out);
-    } else {
-        H9BOct b = h9_lonlatdeg_to_boct(lon, lat, aux);
-        h9_boct_to_uuid(b, out);
-    }
+/* The ⟨face⟩→⟨cell⟩ seam: (cx, cy, oid) → full uuid via the grid-canonical
+ * containment descent, then (reclaimed layout) canonicalise to the mode-0
+ * home with the 3-bit tail via the identity round-trip, so the emitted uuid
+ * is exactly what bin(.,H9_LMAX) would give. L30 cells are sub-micron, so
+ * the round-trip is lossless in practice (stays well under 1 um). Shared by
+ * encode_one (canonical mode) and the bring-your-own-projection entry
+ * hex9_encode_boct — descent is projection-blind by construction. */
+static inline void encode_from_cxcy(double cx, double cy, int oid,
+                                    uint8_t out[16]) {
+    h9grid::uuid_from_cxcy_full(cx, cy, oid, out);
 #if !H9_HAS_HTERM
-    /* Reclaimed layout: there is no h_term, so the deepest address IS the
-     * canonical max-depth bin — "address vs bin" has dissolved. Canonicalise
-     * the descent's full uuid to the mode-0 home with the 3-bit tail (r_mo |
-     * p_c2, p_mo pinned 0) via the identity round-trip, so encode emits exactly
-     * what bin(.,H9_LMAX) would. L30 cells are sub-micron, so this is lossless
-     * in practice (the round-trip stays well under 1 um). */
     {
         h9kring::H9CellId id;
         if (h9kring::identity_from_uuid(out, H9_LMAX, &id))
             h9kring::identity_to_uuid(id, H9_LMAX, out);
     }
 #endif
+}
+
+/* Same seam entered at the WARPED chart — the coordinates hex9_project /
+ * hex9_woct_to_boct emit (the public b_oct). Used by hex9_encode_boct:
+ * project → encode_boct is bit-identical to encode because both descend the
+ * identical h9_warp_inv output. */
+static inline void encode_from_boct(double cx, double cy, int oid,
+                                    uint8_t out[16]) {
+    h9grid::uuid_from_boct_full(cx, cy, oid, out);
+#if !H9_HAS_HTERM
+    {
+        h9kring::H9CellId id;
+        if (h9kring::identity_from_uuid(out, H9_LMAX, &id))
+            h9kring::identity_to_uuid(id, H9_LMAX, out);
+    }
+#endif
+}
+
+static inline void encode_one(double lon, double lat, uint8_t out[16],
+                              const H9Authalic *aux = &h9_g_authalic) {
+    if (g_encoder_mode == 1) {
+        double cx, cy; int oid;
+        h9grid::lonlatdeg_to_cxcy_oid(lon, lat, &cx, &cy, &oid, aux);
+        encode_from_cxcy(cx, cy, oid, out);
+    } else {
+        H9BOct b = h9_lonlatdeg_to_boct(lon, lat, aux);
+        h9_boct_to_uuid(b, out);
+#if !H9_HAS_HTERM
+        /* Same canonicalisation for the legacy NN path (see encode_from_cxcy). */
+        {
+            h9kring::H9CellId id;
+            if (h9kring::identity_from_uuid(out, H9_LMAX, &id))
+                h9kring::identity_to_uuid(id, H9_LMAX, out);
+        }
+#endif
+    }
 }
 static inline void decode_one(const uint8_t uuid[16], double *lon, double *lat,
                               const H9Authalic *aux = &h9_g_authalic) {
@@ -626,6 +656,83 @@ extern "C" int hex9_ring_npoints(int densify) {
     int n = 1;
     for (int i = 0; i < densify; ++i) n *= 3;
     return 6 * n + 1;
+}
+
+/* ── Face-coordinate addressing (bring your own ⟨polyhedron⟩) ────────────────
+ * The ⟨face⟩⟨cell⟩ layers without AKW: mint and read addresses directly at
+ * the (cx, cy, oid) chart. Descent is projection-blind, so a caller with her
+ * own sphere→octahedron map gets the full cell machinery — and the resulting
+ * addresses are NON-CANONICAL: same 128-bit space, different meaning. The
+ * projection identity is dataset metadata; never mix projections within one
+ * dataset (see docs/projection.md). Always the grid-canonical containment
+ * descent — hex9_set_encoder does not apply here. */
+extern "C" int hex9_encode_boct(double cx, double cy, int oid,
+                                uint8_t out_uuid[16]) {
+    if (!out_uuid || oid < 0 || oid > 7 ||
+        !std::isfinite(cx) || !std::isfinite(cy)) return 1;
+    encode_from_boct(cx, cy, oid, out_uuid);
+    return 0;
+}
+
+extern "C" int hex9_encode_boct_many(const double *cx, const double *cy,
+                                     const int *oid, size_t n,
+                                     uint8_t *out_uuid) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= hex9_encode_boct(cx[i], cy[i], oid[i], out_uuid + (size_t)i * 16);
+    return rc;
+}
+
+/* Cell centroid at the uuid's bin layer, in face coordinates — the same
+ * lattice centroid hex9_decode unprojects, emitted before the unprojection
+ * (projection-free; the chart is the returned oid's). */
+extern "C" int hex9_decode_boct(const uint8_t uuid[16],
+                                double *cx, double *cy, int *oid) {
+    if (!uuid || !cx || !cy || !oid) return 1;
+    uint8_t nib[32];
+    h9a_unpack(uuid, nib);
+#if H9_HAS_HTERM
+    /* Legacy layout: only bin uuids carry the identity path; full L29
+     * addresses would need the beam walk, which is lon/lat-coupled. */
+    if (nib[H9_NIB_TAIL - 1] != 0x0Fu) return 1;
+#endif
+    int bl = H9_NIB_BODYTOP;
+    while (bl >= 0 && nib[bl] == 0x0Fu) bl--;
+    h9kring::H9CellId id;
+    if (bl >= 0 && h9kring::identity_from_uuid(uuid, bl, &id) &&
+        h9cell::identity_centroid_boct(id, bl, cx, cy, oid))
+        return 0;
+    return 1;
+}
+
+extern "C" int hex9_decode_boct_many(const uint8_t *uuid, size_t n,
+                                     double *cx, double *cy, int *oid) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= hex9_decode_boct(uuid + (size_t)i * 16, &cx[i], &cy[i], &oid[i]);
+    return rc;
+}
+
+/* Cell boundary ring in face coordinates: (cx, cy, oid) per vertex, each in
+ * the chart of ITS oid (per-vertex frames, same seam-reflection choice the
+ * lon/lat ring uses before unprojection). Closed ring — hex9_ring_npoints
+ * points, last repeats first. Returns point count, or -1 on error. */
+extern "C" int hex9_cell_ring_boct(const uint8_t uuid[16], int layer,
+                                   int densify,
+                                   double *out_cx, double *out_cy,
+                                   int *out_oid, int max_points) {
+    if (!out_cx || !out_cy || !out_oid) return -1;
+    if (layer < 0 || layer > H9_LMAX) return -1;
+    if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
+    const int n_ring = hex9_ring_npoints(densify);
+    if (max_points < n_ring) return -1;
+    h9kring::H9CellId id;
+    if (!h9kring::identity_from_uuid(uuid, layer, &id)) return -1;
+    return h9cell::identity_ring_boct(id, layer, densify, out_cx, out_cy, out_oid);
 }
 
 /* ── Labels ─────────────────────────────────────────────────────────────────

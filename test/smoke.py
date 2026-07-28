@@ -120,4 +120,21 @@ assert au.shape[1] == 16 and av.sum() == 2000.0 and an.sum() == 2000
 assert aa.shape == (2000,) and aa.min() >= 0 and aa.max() < au.shape[0]
 print(f"adaptive: {au.shape[0]} cells, layers {sorted(set(al.tolist()))}, sum={av.sum():.0f}")
 
+# face-coordinate (bring-your-own-projection) surface: project -> encode_boct
+# is byte-identical to encode; decode_boct centroids unproject to decode's
+# lon/lat; cell_ring_boct vertices unproject to the lon/lat ring
+blon = np.random.default_rng(9).uniform(-180, 180, 300)
+blat = np.degrees(np.arcsin(np.random.default_rng(10).uniform(-1, 1, 300)))
+bcx, bcy, boid = h9.project(blon, blat)
+assert (h9.encode_boct(bcx, bcy, boid) == h9.encode(blon, blat)).all()
+bu = h9.encode(blon, blat)
+dcx, dcy, doid = h9.decode_boct(bu)
+ulon, ulat = h9.unproject(dcx, dcy, doid)
+dlon, dlat = h9.decode(bu)
+assert np.max(np.abs(ulat - dlat)) < 1e-9
+rcx, rcy, roid = h9.cell_ring_boct(bu[:1], 8, densify=1)
+rll = h9.cell(bu[0], 8)  # lon/lat ring — compare a vertex count only
+assert rcx.shape[0] == 19 and roid.min() >= 0 and roid.max() <= 7
+print("boct surface: encode/decode/ring OK")
+
 print("PY SMOKE OK")

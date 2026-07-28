@@ -10,6 +10,43 @@ address.
 
 ---
 
+## [2.2.0] — 2026-07-28
+
+### Added — face-coordinate addressing (bring your own ⟨polyhedron⟩)
+
+The ⟨face⟩⟨cell⟩ layers exposed directly at the warped chart — the
+(cx, cy, oid) coordinates `hex9_project` / `hex9_woct_to_boct` emit — for
+callers who supply their **own** sphere→octahedron projection (research
+projections, AKW-comparison studies within the hex9 frame — and the frame
+measuring them back). Descent is projection-blind; bins, lineage, k-rings
+and the curve all work unchanged on the resulting addresses.
+
+- `hex9_encode_boct` (+`_many`): mint addresses from face coordinates.
+  Always the grid-canonical containment descent; entered at the warped
+  chart, so `project → encode_boct` is **bit-identical** to `encode`
+  (internally: `uuid_from_boct_full`, the post-warp half of the descent —
+  the BRAW-in path now bridges to it via `h9_warp_inv`, byte-identical
+  refactor, regime pins unchanged).
+- `hex9_decode_boct` (+`_many`): the cell's lattice centroid in face
+  coordinates — the same centroid `hex9_decode` unprojects, emitted before
+  unprojection. Projection-free.
+- `hex9_cell_ring_boct`: cell boundary in face coordinates, per-vertex
+  frames (each vertex in the chart of its own oid) — render through your
+  own inverse.
+- Python: `encode_boct` / `decode_boct` / `cell_ring_boct` (vectorized).
+- Doctrine (see `docs/projection.md`): addresses minted from a non-hex9
+  projection are **non-canonical** — same 128-bit space, different meaning,
+  no marker bits (deliberately). Projection identity is dataset metadata,
+  exactly as the sphere/WGS84 datum is: never mix within one dataset.
+  Guarantees split at the seam: ⟨face⟩⟨cell⟩ keeps the universality
+  regime; everything upstream is the caller's.
+- `test/boct_io.c` pins the seam: byte-equality with the canonical chain
+  (2D route), working-depth agreement (3D w_oct route — the chart bridge is
+  a rotation out and back, ULP-exact rather than bit-exact), centroid and
+  ring coherence through `unproject`. Note for embedders: the boct surface
+  speaks the *warped* chart, so `hex9_init` must have run — an
+  uninitialised warp collapses BRAW == b_oct and hides frame errors.
+
 ## [2.1.0] — 2026-07-22
 
 ### Changed — deterministic encode chain (universality) — 2026-07-27

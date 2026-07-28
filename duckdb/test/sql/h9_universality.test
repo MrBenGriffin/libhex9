@@ -1,0 +1,26 @@
+# name: test/sql/h9_universality.test
+# description: universality pins — the same lon/lat MUST mint the bit-identical
+#   uuid on every platform this extension is built for. These rows are frozen
+#   regime_pin goldens from libhex9 (test_data/regime_pin.tsv, deterministic
+#   chain, 2026-07-27). A failure here on ANY platform is a regime violation,
+#   never a tolerance issue: do not loosen, re-derive deliberately or fix the
+#   build (contraction must be pinned; see CMakeLists.txt).
+# group: [h9]
+
+require hex9
+
+# Full-depth addresses: LCG sample points from the regime pin, including the
+# two that historically flipped under FMA-contraction variance (s005, s030).
+query III
+SELECT replace(CAST(h9_encode(-62.39632882728877, -15.365651509427153) AS VARCHAR), '-', '') = 'b6707406817251531762571256488134',
+       replace(CAST(h9_encode(-111.72858692570949, -83.34481569615366) AS VARCHAR), '-', '') = '92850838378016070631204602706585',
+       replace(CAST(h9_encode(139.12172450959264, -4.4624304013754319) AS VARCHAR), '-', '') = '13478410802038168037034263288802';
+----
+true	true	true
+
+# Working-depth anchor: Edinburgh's layer-8 bin label (stable across regimes
+# since 2.0.0; the anchor the whole suite steers by).
+query I
+SELECT h9_label(h9_encode(-3.19, 55.95), 8) = '432177468';
+----
+true
