@@ -14,6 +14,7 @@
 #include "hex9_c.h"
 
 #include <cstdint>
+#include <cstring>   /* std::memcpy — manylinux gcc does not provide it transitively */
 #include <stdexcept>
 #include <string>
 
