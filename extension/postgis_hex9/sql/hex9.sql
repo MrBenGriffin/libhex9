@@ -575,3 +575,11 @@ FROM w;
 
 -- Verbs reject E4H input (the marker guard).
 SELECT h9_aim(h9e_encode(ST_SetSRID(ST_MakePoint(35.02, -0.02), 4326), 6, 2), 8, 0.0);
+
+-- True-bearing correction: roundtrip, cardinal/pole identity, magnitude.
+SELECT abs(h9_bearing_to_true(h9_bearing_from_true(137.0, 55.95), 55.95) - 137.0) < 1e-9
+                                                          AS bearing_roundtrip,
+       h9_bearing_from_true(90.0, 45.0) = 90.0            AS cardinal_identity,
+       abs(h9_bearing_from_true(45.0, 90.0) - 45.0) < 1e-9 AS pole_identity,
+       abs(45.0 - h9_bearing_from_true(45.0, 0.0) - 0.1918) < 1e-3
+                                                          AS flattening_magnitude;

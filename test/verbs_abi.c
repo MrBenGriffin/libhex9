@@ -211,6 +211,25 @@ int main(void)
     np = hex9_walk_to(fox, far, LAYER, ring, (size_t)nring, 400, path, 512);
     CHECK(np == 0, "sealed dest reachable (%lld)", (long long)np);
 
+    /* ── true-bearing correction: roundtrip, invariants, magnitude ── */
+    {
+        const double bs[] = {0.0, 30.0, 45.0, 90.0, 135.0, 180.0, 250.0, 359.0};
+        for (int i = 0; i < 8; ++i) {
+            const double v = hex9_bearing_from_true(bs[i], 55.95);
+            CHECK(fabs(hex9_bearing_to_true(v, 55.95) - bs[i]) < 1e-9,
+                  "true-bearing roundtrip (b=%g)", bs[i]);
+            CHECK(fabs(hex9_bearing_from_true(bs[i], 90.0) - bs[i]) < 1e-9,
+                  "pole must be identity (b=%g)", bs[i]);
+        }
+        CHECK(hex9_bearing_from_true(0.0, 45.0) == 0.0 &&
+              fabs(hex9_bearing_from_true(90.0, 45.0) - 90.0) < 1e-12 &&
+              fabs(hex9_bearing_from_true(180.0, 45.0) - 180.0) < 1e-12 &&
+              fabs(hex9_bearing_from_true(270.0, 45.0) - 270.0) < 1e-12,
+              "cardinals must be identity");
+        const double dev = 45.0 - hex9_bearing_from_true(45.0, 0.0);
+        CHECK(fabs(dev - 0.1918) < 1e-3, "flattening magnitude off: %g", dev);
+    }
+
     /* E4H guard */
     uint8_t e4[16];
     CHECK(hex9_e4h_encode(FLON, FLAT, 6, 2, e4) == 0, "e4h encode");

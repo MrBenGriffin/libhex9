@@ -899,3 +899,30 @@ CREATE OR REPLACE FUNCTION h9_vision_cone(uuid, integer, double precision,
     AS 'MODULE_PATHNAME', 'h9_vision_cone'
     LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE
     ROWS 37 COST 5000;
+
+-- h9_bearing_from_true(bearing, lat) → double precision
+--   TRUE (geodesic, WGS84) azimuth → the verbs' bearing convention, at the
+--   geodetic latitude where the heading holds (the source cell — compose
+--   ST_Y(h9_decode(key))). The verbs compute bearings by spherical trig
+--   over geodetic coordinates; a measured true-north heading differs by
+--   the flattening term tan(b_verb) = (M/N)·tan(b_true): identity at the
+--   poles and cardinal bearings, largest ~0.19° at equatorial diagonals —
+--   apply it when that is inside your cone tolerance. Magnetic headings
+--   must already be reduced to true north (declination is epoch/model-
+--   dependent — dataset metadata). Meaningless on the sphere datum.
+--
+--   Example — a drone heading feeding a vision cone:
+--     SELECT v FROM h9_vision_cone(key, 8,
+--         h9_bearing_from_true(hdg, ST_Y(h9_decode(key))), 10.0, 6) AS v;
+--
+-- Availability: Hex9 2.3.0
+CREATE OR REPLACE FUNCTION h9_bearing_from_true(double precision, double precision)
+    RETURNS double precision
+    AS 'MODULE_PATHNAME', 'h9_bearing_from_true'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE COST 1;
+
+-- Inverse: verb bearing → true azimuth. Availability: Hex9 2.3.0
+CREATE OR REPLACE FUNCTION h9_bearing_to_true(double precision, double precision)
+    RETURNS double precision
+    AS 'MODULE_PATHNAME', 'h9_bearing_to_true'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE COST 1;

@@ -113,6 +113,17 @@ ADDRESSES (ruling 2026-08-04), and no existing h9/curve address moves.
   Edinburgh E4H mint byte-exactly and assert the structural/verb laws; the
   0xE guard errors are pinned as errors. `postgis_hex9--2.1.0.sql` is now a
   frozen artifact; `hex9.sql.in` generates `--2.3.0.sql`.
+- **True-bearing correction** for physical/material headings, on every
+  surface: python `hex9.verbs.from_true_bearing`/`to_true_bearing`, C
+  `hex9_bearing_from_true`/`_to_true`, SQL/DuckDB
+  `h9_bearing_from_true`/`_to_true`. A measured true-north heading is a
+  WGS84 geodesic azimuth; the verbs' bearings are spherical trig over
+  geodetic coordinates — the difference is the flattening term
+  `tan(b_verb) = (M/N)·tan(b_true)` at the heading's latitude (identity at
+  poles and cardinal bearings, ~0.19° max at equatorial diagonals). Apply
+  before `aim`/`vision_cone` when cone tolerance is that tight. Magnetic
+  headings must already be reduced to true north — declination is
+  epoch/model-dependent, i.e. dataset metadata, deliberately out of scope.
 - **DuckDB `hex9` extension**: `h9e_encode/h9e_decode(_wkb)/h9e_partner/`
   `h9e_bin/h9e_depth/h9_is_e4h/h9e_host/h9e_label/h9e_parse_label` +
   `h9_aim`, `h9_walk_to(src, dest, layer[, obstacles])` → LIST(UUID) (NULL

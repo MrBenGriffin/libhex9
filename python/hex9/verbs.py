@@ -28,6 +28,11 @@ one encode/bin round per verb, not per cell.
 Moving-target pursuit is deliberately absent: that is the caller's
 loop (re-aim / re-walk per tick), not a grid verb.
 
+Physical headings: a measured true-north heading is a WGS84 geodesic
+azimuth; run it through `from_true_bearing(bearing, lat)` before
+aim/vision_cone when sub-0.2-degree cone fidelity matters (the
+flattening correction — see its docstring).
+
 Bearings and distances here are advisory FP geometry over cell
 centroids — they steer, they never mint. Every address these verbs
 return comes from the core's canonical encode/bin/neighbour chain, so
@@ -46,8 +51,12 @@ except ImportError:            # dev tree: the flat CMake module, same API
     import hex9_ext as _c
 
 __all__ = ['gc_bearing', 'gc_angle', 'wrap180',
+           'from_true_bearing', 'to_true_bearing',
            'encode_keys', 'encode_keys_multi', 'centroids',
            'vision_cone', 'aim', 'walk_to']
+
+#: WGS84 first eccentricity squared (2f - f^2, f = 1/298.257223563)
+_E2 = 0.0066943799901413165
 
 
 # ── spherical helpers ────────────────────────────────────────────────
@@ -73,6 +82,33 @@ def gc_angle(lon1, lat1, lon2, lat2):
 def wrap180(a):
     """Fold angle differences into (-180, 180]."""
     return (np.asarray(a) + 180.0) % 360.0 - 180.0
+
+
+def from_true_bearing(bearing, lat):
+    """TRUE (geodesic, WGS84) azimuth -> the verbs' bearing convention.
+
+    The verbs compute bearings by spherical trig over geodetic
+    coordinates; a physically measured true-north heading (a geodesic
+    azimuth on the ellipsoid) differs by the flattening term:
+    tan(b_verb) = (M/N) tan(b_true), applied at the geodetic latitude
+    `lat` where the heading holds (the source cell). Identity at the
+    poles and at cardinal bearings; largest ~0.19 deg at equatorial
+    diagonals — apply it when that is inside your cone tolerance.
+    Magnetic headings must already be reduced to true north (declination
+    is epoch/model-dependent — dataset metadata, out of scope here).
+    Meaningless for sphere-datum data, where there is no ellipsoid."""
+    b = np.radians(np.asarray(bearing, dtype=np.float64))
+    s2 = np.sin(np.radians(np.asarray(lat, dtype=np.float64))) ** 2
+    q = (1.0 - _E2) / (1.0 - _E2 * s2)          # M/N at this latitude
+    return np.degrees(np.arctan2(q * np.sin(b), np.cos(b))) % 360.0
+
+
+def to_true_bearing(bearing, lat):
+    """Inverse of from_true_bearing: verb bearing -> true azimuth."""
+    b = np.radians(np.asarray(bearing, dtype=np.float64))
+    s2 = np.sin(np.radians(np.asarray(lat, dtype=np.float64))) ** 2
+    q = (1.0 - _E2 * s2) / (1.0 - _E2)          # N/M
+    return np.degrees(np.arctan2(q * np.sin(b), np.cos(b))) % 360.0
 
 
 def _xyz(lon, lat):

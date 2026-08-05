@@ -119,7 +119,19 @@ if target:
     assert detour is not None and not (set(detour) - {target[0]}) & hedge
     assert len(detour) >= len(direct), "detour shorter than direct path"
 
-# 9. a destination sealed inside obstacles is unreachable
+# 9. true-bearing correction: roundtrip, invariants, known magnitude
+bs = np.array([0.0, 30.0, 45.0, 90.0, 135.0, 180.0, 250.0, 359.0])
+ls = np.array([-60.0, -0.02, 0.0, 33.0, 55.95, 89.0])
+for l0 in ls:
+    v = V.from_true_bearing(bs, l0)
+    assert np.allclose(V.to_true_bearing(v, l0), bs, atol=1e-9), "true-bearing roundtrip"
+assert np.allclose(V.from_true_bearing(np.array([0.0, 90.0, 180.0, 270.0]), 45.0),
+                   [0.0, 90.0, 180.0, 270.0], atol=1e-12), "cardinals must be identity"
+assert np.allclose(V.from_true_bearing(bs, 90.0), bs, atol=1e-9), "poles must be identity"
+dev = 45.0 - float(V.from_true_bearing(45.0, 0.0))
+assert abs(dev - 0.1918) < 1e-3, f"flattening magnitude off: {dev}"
+
+# 10. a destination sealed inside obstacles is unreachable
 ring = {bytes(r) for r in np.asarray(
     H.k_ring(V._full([far])[0], LAYER, 1), dtype=np.uint8).reshape(-1, 16)}
 assert V.walk_to(fox_key, far, LAYER, ring, max_expand=400) is None

@@ -1779,3 +1779,25 @@ Datum h9_vision_cone(PG_FUNCTION_ARGS) {
 	});
 }
 } /* extern "C" */
+
+/* ── True-bearing correction (Hex9 2.3.0) ───────────────────────────────────
+ * A physically measured true-north heading is a WGS84 geodesic azimuth; the
+ * verbs' bearings are spherical trig over geodetic coordinates. These convert
+ * between the two at the latitude where the heading holds (the source cell):
+ * tan(b_verb) = (M/N)·tan(b_true). Identity at poles and cardinal bearings;
+ * largest ~0.19° at equatorial diagonals. Magnetic headings must already be
+ * reduced to true north (declination is epoch/model-dependent — dataset
+ * metadata). Meaningless on the sphere datum. */
+extern "C" {
+PG_FUNCTION_INFO_V1(h9_bearing_from_true);
+Datum h9_bearing_from_true(PG_FUNCTION_ARGS) {
+	PG_RETURN_FLOAT8(hex9_bearing_from_true(PG_GETARG_FLOAT8(0),
+	                                        PG_GETARG_FLOAT8(1)));
+}
+
+PG_FUNCTION_INFO_V1(h9_bearing_to_true);
+Datum h9_bearing_to_true(PG_FUNCTION_ARGS) {
+	PG_RETURN_FLOAT8(hex9_bearing_to_true(PG_GETARG_FLOAT8(0),
+	                                      PG_GETARG_FLOAT8(1)));
+}
+} /* extern "C" */

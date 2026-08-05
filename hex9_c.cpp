@@ -1756,6 +1756,27 @@ double h9v_pitch(const uint8_t key[16], int layer) {
 
 }  /* namespace */
 
+/* WGS84 first eccentricity squared (2f - f^2, f = 1/298.257223563) */
+static const double H9V_E2 = 0.0066943799901413165;
+
+static double h9v_true_conv(double bearing, double lat, bool from_true) {
+    const double b = bearing * H9V_DEG;
+    const double s = std::sin(lat * H9V_DEG);
+    const double mn = (1.0 - H9V_E2) / (1.0 - H9V_E2 * s * s);   /* M/N */
+    const double q = from_true ? mn : 1.0 / mn;
+    double out = std::atan2(q * std::sin(b), std::cos(b)) / H9V_DEG;
+    out = std::fmod(out, 360.0);
+    return out < 0 ? out + 360.0 : out;
+}
+
+extern "C" double hex9_bearing_from_true(double bearing, double lat) {
+    return h9v_true_conv(bearing, lat, true);
+}
+
+extern "C" double hex9_bearing_to_true(double bearing, double lat) {
+    return h9v_true_conv(bearing, lat, false);
+}
+
 extern "C" int hex9_aim(const uint8_t key[16], int layer, double bearing,
                         uint8_t out_key[16]) {
     if (!key || !out_key || layer < 0 || layer > H9_LMAX ||

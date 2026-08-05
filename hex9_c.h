@@ -728,6 +728,18 @@ int64_t hex9_k_disk(const uint8_t uuid[16], int layer, int k,
  *                 through it). The source key is always included. Returns
  *                 the count (keys UUID-sorted), or -1 on error.
  */
+/* TRUE (geodesic, WGS84) azimuth <-> the verbs' bearing convention.
+ * The verbs compute bearings by spherical trig over geodetic coordinates;
+ * a physically measured true-north heading differs by the flattening term
+ * tan(b_verb) = (M/N)·tan(b_true) at the geodetic latitude where the
+ * heading holds (the source cell). Identity at poles and cardinal
+ * bearings; largest ~0.19 deg at equatorial diagonals. Magnetic headings
+ * must already be reduced to true north (declination is epoch/model-
+ * dependent — dataset metadata). Meaningless on the sphere datum. Returns
+ * degrees in [0, 360); NaN in yields NaN out. */
+double hex9_bearing_from_true(double bearing, double lat);
+double hex9_bearing_to_true(double bearing, double lat);
+
 int  hex9_aim(const uint8_t key[16], int layer, double bearing,
               uint8_t out_key[16]);
 int64_t hex9_walk_to(const uint8_t src_key[16], const uint8_t dest_key[16],

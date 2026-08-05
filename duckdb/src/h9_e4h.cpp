@@ -171,6 +171,21 @@ static void H9eParseLabelFn(DataChunk &args, ExpressionState &, Vector &result) 
 
 /* ── grid verbs ─────────────────────────────────────────────────────────── */
 
+/* TRUE (geodesic, WGS84) azimuth <-> the verbs' bearing convention (the
+ * flattening term at the latitude where the heading holds; identity at
+ * poles/cardinals, ~0.19 deg max at equatorial diagonals). */
+static void H9BearingFromTrueFn(DataChunk &args, ExpressionState &, Vector &result) {
+	BinaryExecutor::Execute<double, double, double>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [](double b, double lat) { return hex9_bearing_from_true(b, lat); });
+}
+
+static void H9BearingToTrueFn(DataChunk &args, ExpressionState &, Vector &result) {
+	BinaryExecutor::Execute<double, double, double>(
+	    args.data[0], args.data[1], result, args.size(),
+	    [](double b, double lat) { return hex9_bearing_to_true(b, lat); });
+}
+
 static void H9AimFn(DataChunk &args, ExpressionState &, Vector &result) {
 	TernaryExecutor::Execute<hugeint_t, int32_t, double, hugeint_t>(
 	    args.data[0], args.data[1], args.data[2], result, args.size(),
@@ -342,6 +357,8 @@ void RegisterH9E4h(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("h9e_label", {UUID}, STR, H9eLabelFn));
 	loader.RegisterFunction(ScalarFunction("h9e_parse_label", {STR}, UUID, H9eParseLabelFn));
 
+	loader.RegisterFunction(ScalarFunction("h9_bearing_from_true", {DBL, DBL}, DBL, H9BearingFromTrueFn));
+	loader.RegisterFunction(ScalarFunction("h9_bearing_to_true", {DBL, DBL}, DBL, H9BearingToTrueFn));
 	loader.RegisterFunction(ScalarFunction("h9_aim", {UUID, I32, DBL}, UUID, H9AimFn));
 
 	ScalarFunctionSet walk("h9_walk_to");

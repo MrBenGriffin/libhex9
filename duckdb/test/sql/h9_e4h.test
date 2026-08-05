@@ -126,3 +126,13 @@ true	true	true
 statement error
 SELECT h9_aim(h9e_encode(35.02, -0.02, 6, 2), 8, 0.0);
 ----
+
+# ── true-bearing correction: roundtrip, identities, flattening magnitude ──────
+
+query IIII
+SELECT abs(h9_bearing_to_true(h9_bearing_from_true(137.0, 55.95), 55.95) - 137.0) < 1e-9,
+       h9_bearing_from_true(90.0, 45.0) = 90.0,
+       abs(h9_bearing_from_true(45.0, 90.0) - 45.0) < 1e-9,
+       abs(45.0 - h9_bearing_from_true(45.0, 0.0) - 0.1918) < 1e-3;
+----
+true	true	true	true
