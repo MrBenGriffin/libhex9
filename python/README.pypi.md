@@ -60,6 +60,25 @@ county-sized, layer-14 city-block-sized). Bins derived from a full address
 are exact prefixes of the hierarchy — aggregation is a byte operation, not
 a spatial query.
 
+## History
+
+One line per release; the full story is the
+[CHANGELOG](https://github.com/MrBenGriffin/libhex9/blob/main/CHANGELOG.md).
+
+- **2.3.0** — E4H aperture-4 tails (exact classifier, addresses to depth
+  28) with hexagon binning (`e4h_hex` — one canonical key per fine
+  hexagon, 4^d per host); grid verbs `hex9.verbs` (aim / walk_to /
+  vision_cone) + true-bearing correction; universality made citable
+  (`docs/universality.md`, `hex9.selftest()`); curve labels; marker
+  guards (curve/E4H input rejected by h9 machinery).
+- **2.2.1** — packaging/metadata only; no address moves.
+- **2.2.0** — face-coordinate addressing (`encode_boct`/`decode_boct`):
+  bring your own sphere→octahedron projection.
+- **2.1.0** — the deterministic chain: bit-identical addresses on every
+  platform (musl-derived kernels, FMA off); sphere-datum twins.
+- **2.0.0** — via-sphere regime (REGIME CHANGE: addresses moved; re-derive
+  from source geometry, never remap).
+
 ## Links
 
 - Source, C ABI, and doctrine: <https://github.com/MrBenGriffin/libhex9>
