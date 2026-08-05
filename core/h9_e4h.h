@@ -96,8 +96,100 @@ static int h9e4h_split_nibs(const uint8_t nib_in[32], uint8_t host_nib[32],
     return 0;
 }
 
-/* ── exact ring arithmetic: (A + B*sqrt3), signed 128-bit ─────────── */
+/* ── 128-bit integers: native or portable ───────────────────────────
+ * gcc/clang carry __int128 and take the native path (the arithmetic the
+ * pins were frozen against, unchanged). MSVC has no __int128 (found by
+ * the v2.3.0 windows wheel build), so it takes a portable two-limb
+ * two's-complement type with identical semantics. Every value here is
+ * bounded by E4H_BITS_BOUND (< 127) bits, so no operation can overflow
+ * either representation — the two paths are exactly equal, and the
+ * equivalence is machine-checked: -DE4H_FORCE_PORTABLE128 selects the
+ * portable path on any compiler, and CI/local runs the full parity
+ * corpus + census against it (byte-exact or it does not merge). */
+#if defined(__SIZEOF_INT128__) && !defined(E4H_FORCE_PORTABLE128)
+
 typedef __int128 e4i;
+
+static int e4i_sgn(e4i v) { return (v > 0) - (v < 0); }
+
+static void e4i_abs_parts(e4i v, uint64_t *lo, uint64_t *hi) {
+    const unsigned __int128 u =
+        v < 0 ? (unsigned __int128)(-v) : (unsigned __int128)v;
+    *lo = (uint64_t)u;
+    *hi = (uint64_t)(u >> 64);
+}
+
+#else  /* portable two-limb signed 128-bit (MSVC / forced equivalence) */
+
+static uint64_t e4i_mulhi64(uint64_t x, uint64_t y) {
+    const uint64_t x0 = x & 0xffffffffu, x1 = x >> 32;
+    const uint64_t y0 = y & 0xffffffffu, y1 = y >> 32;
+    const uint64_t p00 = x0 * y0;
+    const uint64_t p01 = x0 * y1;
+    const uint64_t p10 = x1 * y0;
+    const uint64_t p11 = x1 * y1;
+    const uint64_t mid = (p00 >> 32) + (p01 & 0xffffffffu) + (p10 & 0xffffffffu);
+    return p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+}
+
+struct e4i {
+    uint64_t lo, hi;             /* two's complement; hi carries the sign */
+    e4i() : lo(0), hi(0) {}
+    e4i(int v) : lo((uint64_t)(int64_t)v), hi(v < 0 ? ~0ull : 0) {}
+    e4i(long v) : lo((uint64_t)(int64_t)v), hi(v < 0 ? ~0ull : 0) {}
+    e4i(long long v) : lo((uint64_t)v), hi(v < 0 ? ~0ull : 0) {}
+};
+
+static e4i operator+(e4i a, e4i b) {
+    e4i r;
+    r.lo = a.lo + b.lo;
+    r.hi = a.hi + b.hi + (r.lo < a.lo ? 1u : 0u);
+    return r;
+}
+
+static e4i operator-(e4i a, e4i b) {
+    e4i r;
+    r.lo = a.lo - b.lo;
+    r.hi = a.hi - b.hi - (a.lo < b.lo ? 1u : 0u);
+    return r;
+}
+
+static e4i operator-(e4i a) { return e4i(0) - a; }
+
+static int e4i_sgn(e4i v) {
+    if (v.hi >> 63) return -1;
+    return (v.hi | v.lo) ? 1 : 0;
+}
+
+static void e4i_abs_parts(e4i v, uint64_t *lo, uint64_t *hi) {
+    if (v.hi >> 63) v = -v;
+    *lo = v.lo;
+    *hi = v.hi;
+}
+
+/* e4i × int64 by sign-magnitude (|result| < 2^126, so exact) */
+static e4i operator*(e4i a, int64_t c) {
+    const int neg = (e4i_sgn(a) < 0) != (c < 0);
+    uint64_t alo, ahi;
+    e4i_abs_parts(a, &alo, &ahi);
+    const uint64_t uc = c < 0 ? (uint64_t)(-(c + 1)) + 1u : (uint64_t)c;
+    e4i r;
+    r.lo = alo * uc;
+    r.hi = e4i_mulhi64(alo, uc) + ahi * uc;
+    return neg ? -r : r;
+}
+
+static e4i operator*(int64_t c, e4i a) { return a * c; }
+
+static e4i operator<<(e4i a, int s) {   /* 0 < s < 64 in this kernel */
+    e4i r;
+    r.hi = (a.hi << s) | (a.lo >> (64 - s));
+    r.lo = a.lo << s;
+    return r;
+}
+
+#endif  /* 128-bit backend */
+
 typedef struct { e4i A, B; } e4r;
 typedef struct { e4r re, im; } e4c;
 
@@ -105,38 +197,48 @@ static e4r e4r_sub(e4r a, e4r b) { e4r r = { a.A - b.A, a.B - b.B }; return r; }
 
 /* ring multiply where one factor has SMALL (table) components */
 static e4r e4r_muls(e4r a, int64_t cA, int64_t cB) {
-    e4r r = { a.A * cA + 3 * (a.B * cB), a.A * cB + a.B * cA };
+    e4r r = { a.A * cA + (int64_t)3 * (a.B * cB), a.A * cB + a.B * cA };
     return r;
 }
 
+/* 256-bit helpers for the A^2 vs 3B^2 tie-break — plain uint64 limbs,
+ * shared by both 128-bit backends */
 static void h9e4h_acc256(uint64_t o[4], int idx, uint64_t v) {
-    unsigned __int128 t = (unsigned __int128)o[idx] + v;
-    o[idx] = (uint64_t)t;
-    uint64_t carry = (uint64_t)(t >> 64);
-    for (int i = idx + 1; carry && i < 4; ++i) {
-        t = (unsigned __int128)o[i] + carry;
-        o[i] = (uint64_t)t;
-        carry = (uint64_t)(t >> 64);
+    uint64_t carry = v;
+    for (int i = idx; carry && i < 4; ++i) {
+        const uint64_t s = o[i] + carry;
+        carry = (s < o[i]) ? 1u : 0u;
+        o[i] = s;
     }
 }
 
-static void h9e4h_sq256(unsigned __int128 v, uint64_t o[4]) {
-    const uint64_t lo = (uint64_t)v, hi = (uint64_t)(v >> 64);
-    const unsigned __int128 ll = (unsigned __int128)lo * lo;
-    const unsigned __int128 lh = (unsigned __int128)lo * hi;
-    const unsigned __int128 hh = (unsigned __int128)hi * hi;
-    o[0] = (uint64_t)ll; o[1] = (uint64_t)(ll >> 64); o[2] = 0; o[3] = 0;
-    h9e4h_acc256(o, 1, (uint64_t)lh); h9e4h_acc256(o, 2, (uint64_t)(lh >> 64));
-    h9e4h_acc256(o, 1, (uint64_t)lh); h9e4h_acc256(o, 2, (uint64_t)(lh >> 64));
-    h9e4h_acc256(o, 2, (uint64_t)hh); h9e4h_acc256(o, 3, (uint64_t)(hh >> 64));
+static uint64_t h9e4h_hi64(uint64_t x, uint64_t y) {
+#if defined(__SIZEOF_INT128__) && !defined(E4H_FORCE_PORTABLE128)
+    return (uint64_t)(((unsigned __int128)x * y) >> 64);
+#else
+    return e4i_mulhi64(x, y);
+#endif
+}
+
+static void h9e4h_sq256(uint64_t lo, uint64_t hi, uint64_t o[4]) {
+    o[0] = lo * lo;
+    o[1] = h9e4h_hi64(lo, lo);
+    o[2] = 0;
+    o[3] = 0;
+    const uint64_t lh_lo = lo * hi, lh_hi = h9e4h_hi64(lo, hi);
+    h9e4h_acc256(o, 1, lh_lo); h9e4h_acc256(o, 2, lh_hi);
+    h9e4h_acc256(o, 1, lh_lo); h9e4h_acc256(o, 2, lh_hi);
+    h9e4h_acc256(o, 2, hi * hi); h9e4h_acc256(o, 3, h9e4h_hi64(hi, hi));
 }
 
 static void h9e4h_mul3_256(uint64_t o[4]) {
     uint64_t carry = 0;
     for (int i = 0; i < 4; ++i) {
-        const unsigned __int128 t = (unsigned __int128)o[i] * 3u + carry;
-        o[i] = (uint64_t)t;
-        carry = (uint64_t)(t >> 64);
+        const uint64_t lo = o[i] * 3u;
+        const uint64_t hi = h9e4h_hi64(o[i], 3u);
+        const uint64_t s = lo + carry;
+        carry = hi + ((s < lo) ? 1u : 0u);
+        o[i] = s;
     }
 }
 
@@ -148,18 +250,16 @@ static int h9e4h_cmp256(const uint64_t a[4], const uint64_t b[4]) {
 
 /* exact sign of A + B*sqrt3 */
 static int e4r_sgn(e4r v) {
-    const int sA = (v.A > 0) - (v.A < 0);
-    const int sB = (v.B > 0) - (v.B < 0);
+    const int sA = e4i_sgn(v.A);
+    const int sB = e4i_sgn(v.B);
     if (sA == 0) return sB;
     if (sB == 0 || sA == sB) return sA;
     /* opposite signs: decided by A^2 vs 3B^2, exactly */
-    const unsigned __int128 ua =
-        v.A < 0 ? (unsigned __int128)(-v.A) : (unsigned __int128)v.A;
-    const unsigned __int128 ub =
-        v.B < 0 ? (unsigned __int128)(-v.B) : (unsigned __int128)v.B;
-    uint64_t a2[4], b2[4];
-    h9e4h_sq256(ua, a2);
-    h9e4h_sq256(ub, b2);
+    uint64_t alo, ahi, blo, bhi, a2[4], b2[4];
+    e4i_abs_parts(v.A, &alo, &ahi);
+    e4i_abs_parts(v.B, &blo, &bhi);
+    h9e4h_sq256(alo, ahi, a2);
+    h9e4h_sq256(blo, bhi, b2);
     h9e4h_mul3_256(b2);
     const int c = h9e4h_cmp256(a2, b2);
     return c > 0 ? sA : (c < 0 ? sB : 0);

@@ -73,6 +73,13 @@ ADDRESSES (ruling 2026-08-04), and no existing h9/curve address moves.
   the reference's open "all-depths stability" question is closed by
   construction. Constants are frozen from the hhg9 reference by
   `tools/gen_e4h_tables.py` (provenance commit recorded in the header).
+- The 128-bit descent has two proven-equal backends: native `__int128`
+  (gcc/clang — the arithmetic the pins were frozen against) and a portable
+  two-limb type for MSVC, which has no `__int128` (found by the first
+  v2.3.0 windows wheel build — the wheels build under MSVC, unlike the
+  mingw-only C-library CI). `-DE4H_FORCE_PORTABLE128` selects the portable
+  path on any compiler; the equivalence is machine-checked by running the
+  full parity corpus + census against it.
 - C ABI: `hex9_e4h_encode` / `_decode` / `_partner` (+ `_sphere` and
   `_many` twins), `_split`, `_bin` (tail truncation), `_depth`,
   `hex9_is_e4h`, `_label` / `_parse_label`
