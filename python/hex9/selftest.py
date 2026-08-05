@@ -90,6 +90,9 @@ def selftest():
     finite = [i for i, p in enumerate(_PINS) if abs(p[2]) != 90.0]
     if max(abs(rlat[i] - lat[i]) for i in finite) > 1e-6:
         raise RuntimeError("decode round-trip out of tolerance")
+    if max(abs((rlon[i] - lon[i] + 180.0) % 360.0 - 180.0)
+           * np.cos(np.radians(lat[i])) for i in finite) > 1e-6:
+        raise RuntimeError("decode round-trip out of tolerance (lon)")
 
     # One E4H pin (test_data/e4h_pin.tsv row L0D28-rand00): the exact
     # aperture-4 tail classifier at the FULL nibble budget — the deepest

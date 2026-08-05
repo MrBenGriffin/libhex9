@@ -59,8 +59,8 @@ static nb::tuple decode(u8_2d_in uuid, bool sphere) {
         else        rc = hex9_decode_many(uuid.data(), n, lon, lat);
     }
     if (rc) { delete[] lon; delete[] lat;
-              throw std::runtime_error("hex9.decode: E4H uuid input — "
-                                       "use e4h_decode"); }
+              throw std::runtime_error("hex9.decode: curve or E4H uuid input — "
+                                       "use curve_decode / e4h_decode"); }
     nb::capsule lon_o(lon, [](void *p) noexcept { delete[] static_cast<double *>(p); });
     nb::capsule lat_o(lat, [](void *p) noexcept { delete[] static_cast<double *>(p); });
     return nb::make_tuple(
@@ -714,6 +714,31 @@ e4h_bin(u8_2d_in uuid, int depth) {
     return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
 }
 
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>> e4h_hex(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    uint8_t *out = new uint8_t[n * 16];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = hex9_e4h_hex_many(uuid.data(), n, out);
+    }
+    if (rc) { delete[] out;
+              throw std::runtime_error("e4h_hex: not an E4H uuid / bad grammar"); }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
+static nb::ndarray<nb::numpy, int32_t, nb::ndim<1>> e4h_mode(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    int32_t *out = new int32_t[n];
+    for (size_t i = 0; i < n; ++i)
+        out[i] = hex9_e4h_mode(uuid.data() + i * 16);
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<int32_t *>(p); });
+    return nb::ndarray<nb::numpy, int32_t, nb::ndim<1>>(out, {n}, owner);
+}
+
 static nb::ndarray<nb::numpy, int32_t, nb::ndim<1>> e4h_depth(u8_2d_in uuid) {
     const size_t n = uuid.shape(0);
     if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
@@ -919,6 +944,16 @@ H9_NB_MODULE_(HEX9_PY_MODULE, m) {
     m.def("e4h_bin", &e4h_bin, nb::arg("uuid"), nb::arg("depth"),
           "Truncate the aperture-4 tail to `depth` digits — suffix-local "
           "binning (exact, unlike the a9 body digits).");
+    m.def("e4h_hex", &e4h_hex, nb::arg("uuid"),
+          "Canonical HEXAGON key of each E4H half address — the matched "
+          "pair's mode-0 member (both halves map to the same key; "
+          "idempotent; every host owns exactly 4^depth hexagons). The GIS "
+          "binning surface: E4H addresses are half-hex trapezoids, the "
+          "hexagons are the pairs.");
+    m.def("e4h_mode", &e4h_mode, nb::arg("uuid"),
+          "Transport mode (0/1) per E4H uuid — parity of the descent's "
+          "rotation accumulator; -1 where not E4H. Pair members always "
+          "carry opposite modes.");
     m.def("e4h_depth", &e4h_depth, nb::arg("uuid"),
           "Tail digit count per uuid; -1 where not E4H.");
     m.def("e4h_label", &e4h_label_one, nb::arg("uuid"),

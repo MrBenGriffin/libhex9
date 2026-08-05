@@ -131,8 +131,21 @@ SELECT h9_aim(h9e_encode(35.02, -0.02, 6, 2), 8, 0.0);
 
 query IIII
 SELECT abs(h9_bearing_to_true(h9_bearing_from_true(137.0, 55.95), 55.95) - 137.0) < 1e-9,
-       h9_bearing_from_true(90.0, 45.0) = 90.0,
+       abs(h9_bearing_from_true(90.0, 45.0) - 90.0) < 1e-9,
        abs(h9_bearing_from_true(45.0, 90.0) - 45.0) < 1e-9,
        abs(45.0 - h9_bearing_from_true(45.0, 0.0) - 0.1918) < 1e-3;
 ----
 true	true	true	true
+
+# ── hexagon binning: pair shares one mode-0 key, idempotent ───────────────────
+
+query IIIII
+SELECT h9e_hex(u) = h9e_hex(v),
+       h9e_hex(u) = u OR h9e_hex(u) = v,
+       h9e_hex(h9e_hex(u)) = h9e_hex(u),
+       h9e_mode(u) + h9e_mode(v) = 1,
+       h9e_mode(h9e_hex(u)) = 0
+FROM (SELECT u, h9e_encode(h9e_partner(u).lon, h9e_partner(u).lat, 6, 4) AS v
+      FROM (SELECT h9e_encode(-3.19, 55.95, 6, 4) AS u));
+----
+true	true	true	true	true

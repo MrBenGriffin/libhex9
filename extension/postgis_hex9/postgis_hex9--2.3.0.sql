@@ -926,3 +926,31 @@ CREATE OR REPLACE FUNCTION h9_bearing_to_true(double precision, double precision
     RETURNS double precision
     AS 'MODULE_PATHNAME', 'h9_bearing_to_true'
     LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE COST 1;
+
+-- h9e_hex(uuid) → uuid — the CANONICAL HEXAGON KEY (the GIS binning surface).
+--   E4H addresses are half-hex trapezoids; the fine hexagons are the matched
+--   pairs, mostly straddling parent/host boundaries. h9e_hex names each
+--   hexagon by its MODE-0 member (ruling 2026-08-05; mode = parity of the
+--   descent rotation accumulator, pure address arithmetic — see h9e_mode):
+--   both halves of a pair map to the SAME key, the map is idempotent, and
+--   every host owns exactly 4^depth hexagons (the aperture count), so
+--   host-level roll-ups of hexagon bins partition evenly. Datum-free
+--   (structural) — no _sphere twin exists or ever will.
+--
+--   Example — hexagon-binned aggregation:
+--     SELECT h9e_hex(h9e_encode(geom, 6, 2)) AS hex, count(*)
+--     FROM pts GROUP BY 1;
+--
+-- Availability: Hex9 2.3.0
+CREATE OR REPLACE FUNCTION h9e_hex(uuid)
+    RETURNS uuid
+    AS 'MODULE_PATHNAME', 'h9e_hex'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE COST 100;
+
+-- h9e_mode(uuid) → integer — transport mode (0/1) of an E4H half address;
+--   pair members always carry opposite modes; -1 if not E4H.
+-- Availability: Hex9 2.3.0
+CREATE OR REPLACE FUNCTION h9e_mode(uuid)
+    RETURNS integer
+    AS 'MODULE_PATHNAME', 'h9e_mode'
+    LANGUAGE 'c' IMMUTABLE STRICT PARALLEL SAFE COST 10;

@@ -10,7 +10,7 @@
 
 #define E4H_MARK   0xE
 #define E4H_SIGMA  46   /* snap: W = llround(w * 2^SIGMA) */
-#define E4H_BITS_BOUND 109 /* worst-case component bits, rigorous */
+#define E4H_BITS_BOUND 113 /* worst-case component bits, rigorous */
 #if E4H_BITS_BOUND > 120
 #error "E4H descent component bound exceeds __int128 comfort"
 #endif

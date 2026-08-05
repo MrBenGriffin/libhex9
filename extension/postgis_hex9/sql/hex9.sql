@@ -579,7 +579,19 @@ SELECT h9_aim(h9e_encode(ST_SetSRID(ST_MakePoint(35.02, -0.02), 4326), 6, 2), 8,
 -- True-bearing correction: roundtrip, cardinal/pole identity, magnitude.
 SELECT abs(h9_bearing_to_true(h9_bearing_from_true(137.0, 55.95), 55.95) - 137.0) < 1e-9
                                                           AS bearing_roundtrip,
-       h9_bearing_from_true(90.0, 45.0) = 90.0            AS cardinal_identity,
+       abs(h9_bearing_from_true(90.0, 45.0) - 90.0) < 1e-9 AS cardinal_identity,
        abs(h9_bearing_from_true(45.0, 90.0) - 45.0) < 1e-9 AS pole_identity,
        abs(45.0 - h9_bearing_from_true(45.0, 0.0) - 0.1918) < 1e-3
                                                           AS flattening_magnitude;
+
+-- Hexagon binning: both pair members share one canonical (mode-0) key;
+-- idempotent; the key is one of the two members.
+WITH e AS (SELECT h9e_encode(ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326),
+                             6, 4) AS u),
+     p AS (SELECT u, h9e_encode(h9e_partner(u), 6, 4) AS v FROM e)
+SELECT h9e_hex(u) = h9e_hex(v)                     AS pair_shares_hex_key,
+       h9e_hex(u) IN (u, v)                        AS hex_key_is_a_member,
+       h9e_hex(h9e_hex(u)) = h9e_hex(u)            AS hex_idempotent,
+       h9e_mode(u) + h9e_mode(v) = 1               AS pair_modes_opposite,
+       h9e_mode(h9e_hex(u)) = 0                    AS hex_key_is_mode0
+FROM p;

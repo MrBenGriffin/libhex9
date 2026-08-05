@@ -170,8 +170,17 @@ extern "C" int hex9_encode(double lon, double lat, uint8_t out_uuid[16]) {
     return 0;
 }
 
+/* Marker guards: E4H (0xE anywhere) and curve (nibble 0 = 0xC) uuids are
+ * different address kinds — the h9 machinery must reject them loudly, not
+ * resolve them into plausible-looking garbage (a curve uuid pushed through
+ * the boct walk decodes to the wrong hemisphere; found in the 2.3.0
+ * review). Curve input belongs to hex9_curve_*; E4H to hex9_e4h_*. */
+static int h9_foreign_uuid(const uint8_t uuid[16]) {
+    return h9e4h_is_marked(uuid) || h9curve::is_curve_uuid(uuid);
+}
+
 extern "C" int hex9_decode(const uint8_t uuid[16], double *lon, double *lat) {
-    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_decode */
+    if (h9_foreign_uuid(uuid)) return 1;    /* see h9_foreign_uuid */
     decode_one(uuid, lon, lat);
     return 0;
 }
@@ -186,7 +195,7 @@ extern "C" int hex9_encode_sphere(double lon, double lat, uint8_t out_uuid[16]) 
 }
 
 extern "C" int hex9_decode_sphere(const uint8_t uuid[16], double *lon, double *lat) {
-    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_decode */
+    if (h9_foreign_uuid(uuid)) return 1;    /* see h9_foreign_uuid */
     decode_one(uuid, lon, lat, &h9_g_sphere);
     return 0;
 }
@@ -233,7 +242,7 @@ static void canonical_bin(const uint8_t uuid[16], int layer, uint8_t out[16]) {
 
 extern "C" int hex9_bin(const uint8_t uuid[16], int layer, uint8_t out_uuid[16]) {
     if (layer < 0 || layer > H9_LMAX) return 1;
-    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_bin */
+    if (h9_foreign_uuid(uuid)) return 1;    /* see h9_foreign_uuid */
     canonical_bin(uuid, layer, out_uuid);
     return 0;
 }
@@ -252,7 +261,7 @@ extern "C" int hex9_encode_many(const double *lon, const double *lat, size_t n,
 extern "C" int hex9_decode_many(const uint8_t *uuid, size_t n,
                                 double *lon, double *lat) {
     for (size_t i = 0; i < n; ++i)
-        if (h9e4h_is_marked(uuid + i * 16)) return 1;
+        if (h9_foreign_uuid(uuid + i * 16)) return 1;
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static)
     for (ptrdiff_t i = 0; i < N; ++i)
@@ -272,7 +281,7 @@ extern "C" int hex9_encode_many_sphere(const double *lon, const double *lat,
 extern "C" int hex9_decode_many_sphere(const uint8_t *uuid, size_t n,
                                        double *lon, double *lat) {
     for (size_t i = 0; i < n; ++i)
-        if (h9e4h_is_marked(uuid + i * 16)) return 1;
+        if (h9_foreign_uuid(uuid + i * 16)) return 1;
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static)
     for (ptrdiff_t i = 0; i < N; ++i)
@@ -284,7 +293,7 @@ extern "C" int hex9_bin_many(const uint8_t *uuid, int layer, size_t n,
                              uint8_t *out_uuid) {
     if (layer < 0 || layer > H9_LMAX) return 1;
     for (size_t i = 0; i < n; ++i)
-        if (h9e4h_is_marked(uuid + i * 16)) return 1;
+        if (h9_foreign_uuid(uuid + i * 16)) return 1;
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static)
     for (ptrdiff_t i = 0; i < N; ++i)
@@ -772,7 +781,7 @@ static int write_label(const uint8_t nibbles[32], int layer, char *buf) {
  * decoded to its canonical bin first so label(full) == label(h9_bin(full)). */
 extern "C" int hex9_label(const uint8_t uuid[16], int layer, char *buf, size_t buflen) {
     if (layer < 0 || layer > H9_LMAX || !buf) return -1;
-    if (h9e4h_is_marked(uuid)) return -1;   /* E4H input: hex9_e4h_label */
+    if (h9_foreign_uuid(uuid)) return -1;   /* curve: hex9_curve_label; e4h: hex9_e4h_label */
     uint8_t cb[16], nibbles[32];
     canonical_bin(uuid, layer, cb);
     h9a_unpack(cb, nibbles);
@@ -784,7 +793,7 @@ extern "C" int hex9_label(const uint8_t uuid[16], int layer, char *buf, size_t b
 
 extern "C" int hex9_label_key(const uint8_t uuid[16], int layer, char *buf, size_t buflen) {
     if (layer < 0 || layer > H9_LMAX || !buf) return -1;
-    if (h9e4h_is_marked(uuid)) return -1;   /* E4H input: hex9_e4h_label */
+    if (h9_foreign_uuid(uuid)) return -1;   /* curve: hex9_curve_label; e4h: hex9_e4h_label */
     /* Canonical bin: it is a bin (nibble[30]==0xF), so nibble[31] already holds
      * the layer's key tail (c2<<1 | oct_mode) — no backward walk, and no c_mo
      * display bit (the canonical mode-0 home is unambiguous, so GIS exports no
@@ -1341,7 +1350,12 @@ extern "C" int hex9_neighbors(const uint8_t uuid[16], int layer, uint8_t *out_uu
 }
 
 extern "C" int64_t hex9_disk_ncells(int k) {
-    if (k < 0) return -1;
+    /* 1 + 3k(k+1). k is capped so the arithmetic (and every buffer any
+     * caller sizes from the result) stays far inside int64 — the callers'
+     * own 60M-cell caps reject long before this bound bites. Un-capped,
+     * k >~ 1.75e9 overflowed int64 and slipped past those caps (found in
+     * the 2.3.0 review). */
+    if (k < 0 || k > 100000000) return -1;
     return 1 + 3 * (int64_t)k * ((int64_t)k + 1);
 }
 
@@ -1439,25 +1453,18 @@ static int e4h_host_info(const uint8_t host[16], int layer,
     return 0;
 }
 
-static int e4h_encode_one(double lon, double lat, int layer, int depth,
-                          int sphere, uint8_t out[16]) {
-    if (!out || layer < 0 || depth < 0 ||
-        layer + 2 + depth > H9_NIB_BODYTOP) return E4H_EBAD;
-    double px, py;
-    int g;
-    int rc = sphere ? hex9_project_sphere(lon, lat, &px, &py, &g)
-                    : hex9_project(lon, lat, &px, &py, &g);
-    if (rc) return E4H_EBAD;
-    uint8_t full[16], host[16];
-    rc = sphere ? hex9_encode_sphere(lon, lat, full)
-                : hex9_encode(lon, lat, full);
-    if (rc) return E4H_EBAD;
+/* post-projection tail shared by the lon/lat and chart entries: bin the
+ * full uuid to the host, unfold the chart point to the host's frame, run
+ * the exact descent, write the nibbles */
+static int e4h_encode_tail(double px, double py, int g, const uint8_t full[16],
+                           int layer, int depth, uint8_t out[16]) {
+    uint8_t host[16];
     if (hex9_bin(full, layer, host)) return E4H_EBAD;
     int hoid, c2, p_mo;
     double hcx, hcy;
     if (e4h_host_info(host, layer, &hoid, &c2, &p_mo, &hcx, &hcy))
         return E4H_EBAD;
-    rc = h9e4h_unfold_point(&px, &py, g, hoid);
+    int rc = h9e4h_unfold_point(&px, &py, g, hoid);
     if (rc) return rc;
     double wx, wy;
     h9e4h_to_frame(px, py, hcx, hcy, p_mo, c2, layer, &wx, &wy);
@@ -1474,9 +1481,41 @@ static int e4h_encode_one(double lon, double lat, int layer, int depth,
     return 0;
 }
 
-static int e4h_decode_one(const uint8_t u[16], int sphere, int partner,
-                          double *lon, double *lat) {
-    if (!u || !lon || !lat) return E4H_EBAD;
+static int e4h_encode_one(double lon, double lat, int layer, int depth,
+                          int sphere, uint8_t out[16]) {
+    if (!out || layer < 0 || depth < 0 ||
+        layer + 2 + depth > H9_NIB_BODYTOP) return E4H_EBAD;
+    double px, py;
+    int g;
+    int rc = sphere ? hex9_project_sphere(lon, lat, &px, &py, &g)
+                    : hex9_project(lon, lat, &px, &py, &g);
+    if (rc) return E4H_EBAD;
+    uint8_t full[16];
+    rc = sphere ? hex9_encode_sphere(lon, lat, full)
+                : hex9_encode(lon, lat, full);
+    if (rc) return E4H_EBAD;
+    return e4h_encode_tail(px, py, g, full, layer, depth, out);
+}
+
+/* chart-side entry (datum-free): mint the E4H address of a b_oct chart
+ * point. project → this is bit-identical to e4h_encode_one (the boct
+ * seam, pinned by test/boct_io and wheel_pin). */
+static int e4h_encode_chart(double px, double py, int g, int layer, int depth,
+                            uint8_t out[16]) {
+    if (!out || layer < 0 || depth < 0 ||
+        layer + 2 + depth > H9_NIB_BODYTOP) return E4H_EBAD;
+    uint8_t full[16];
+    if (hex9_encode_boct(px, py, g, full)) return E4H_EBAD;
+    return e4h_encode_tail(px, py, g, full, layer, depth, out);
+}
+
+/* representative point (own or partner half) in the b_oct chart, folded
+ * into its containing octant — the datum-free half of decode. Also hands
+ * back the split fields for callers that continue chart-side. */
+static int e4h_rep_chart(const uint8_t u[16], int partner,
+                         double *zx, double *zy, int *oid,
+                         int *layer_out, int *nd_out) {
+    if (!u) return E4H_EBAD;
     uint8_t nib[32], hostnib[32], digits[28], host[16];
     h9a_unpack(u, nib);
     int layer, half, nd;
@@ -1492,13 +1531,68 @@ static int e4h_decode_one(const uint8_t u[16], int sphere, int partner,
     double rr, ri;
     rc = h9e4h_compose(half, digits, nd, hoid, c2, pr, E4H_CEN_IM, &rr, &ri);
     if (rc) return rc;
+    h9e4h_from_frame(rr, ri, hcx, hcy, p_mo, c2, layer, zx, zy);
+    *oid = hoid;
+    h9e4h_fold(zx, zy, oid);
+    if (layer_out) *layer_out = layer;
+    if (nd_out) *nd_out = nd;
+    return 0;
+}
+
+static int e4h_decode_one(const uint8_t u[16], int sphere, int partner,
+                          double *lon, double *lat) {
+    if (!lon || !lat) return E4H_EBAD;
     double zx, zy;
-    h9e4h_from_frame(rr, ri, hcx, hcy, p_mo, c2, layer, &zx, &zy);
-    int oid = hoid;
-    h9e4h_fold(&zx, &zy, &oid);
+    int oid;
+    int rc = e4h_rep_chart(u, partner, &zx, &zy, &oid, NULL, NULL);
+    if (rc) return rc;
     rc = sphere ? hex9_unproject_sphere(zx, zy, oid, lon, lat)
                 : hex9_unproject(zx, zy, oid, lon, lat);
     return rc ? E4H_EBAD : 0;
+}
+
+/* transport MODE of an E4H address: the parity of the descent's rotation
+ * accumulator s — pure integer arithmetic on the address (host oid/c2
+ * from the nibbles, s = 3*half + sum ROT[k] over the tail). RULING
+ * 2026-08-05: canonical member of a matched pair = the MODE-0 half; the
+ * two halves of every pair carry opposite mode, and every host owns
+ * exactly 4^d mode-0 hexagons (the aperture count). Machine-verified
+ * against the transport-lattice triangle-parity oracle on 20,608 census
+ * addresses incl. 820 cross-seam pairs: mode == s mod 2 exactly, with NO
+ * base term (the host state frame absorbs octant mirroring). */
+static int e4h_mode_of(const uint8_t u[16]) {
+    uint8_t nib[32], hostnib[32], digits[28];
+    int layer, half, nd;
+    h9a_unpack(u, nib);
+    if (h9e4h_split_nibs(nib, hostnib, &layer, &half, digits, &nd))
+        return -1;
+    const uint8_t kt = hostnib[H9_NIB_TAIL];
+    const int c2 = (kt >> 1) & 3;
+    const int r_mo = kt & 1;
+    if (c2 > 2 || hostnib[0] > 11) return -1;
+    const int hoid = H9_L0HEX_BACK[hostnib[0]][r_mo][0];
+    int s = 3 * half;
+    for (int i = 0; i < nd; ++i) {
+        int k = 0;
+        if (digits[i] != 0) {
+            const int cl = h9e4h_digit_class(hoid, c2, half, digits[i]);
+            if (!cl) return -1;
+            k = E4H_P3[((cl - s) % 3 + 3) % 3];
+        }
+        s += E4H_ROT[k];
+    }
+    return s & 1;
+}
+
+/* partner ADDRESS, entirely chart-side (datum-free — the pairing is
+ * structural): decode the partner half's representative in the chart and
+ * re-encode through the boct seam at the same (layer, depth). */
+static int e4h_partner_uuid(const uint8_t u[16], uint8_t out[16]) {
+    double zx, zy;
+    int oid, layer, nd;
+    int rc = e4h_rep_chart(u, 1, &zx, &zy, &oid, &layer, &nd);
+    if (rc) return rc;
+    return e4h_encode_chart(zx, zy, oid, layer, nd, out);
 }
 
 extern "C" int hex9_e4h_encode(double lon, double lat, int layer, int depth,
@@ -1514,10 +1608,12 @@ extern "C" int hex9_e4h_encode_many(const double *lon, const double *lat,
                                     uint8_t *out_uuid) {
     int rc = 0;
     const ptrdiff_t N = (ptrdiff_t)n;
+    /* batch forms report 0/1 only — per-item codes would blend under the
+     * OR reduction (1|2 == 3 would masquerade as the seam code) */
     #pragma omp parallel for schedule(static) reduction(|:rc)
     for (ptrdiff_t i = 0; i < N; ++i)
         rc |= e4h_encode_one(lon[i], lat[i], layer, depth, 0,
-                             out_uuid + (size_t)i * 16);
+                             out_uuid + (size_t)i * 16) ? 1 : 0;
     return rc;
 }
 extern "C" int hex9_e4h_encode_many_sphere(const double *lon, const double *lat,
@@ -1528,7 +1624,7 @@ extern "C" int hex9_e4h_encode_many_sphere(const double *lon, const double *lat,
     #pragma omp parallel for schedule(static) reduction(|:rc)
     for (ptrdiff_t i = 0; i < N; ++i)
         rc |= e4h_encode_one(lon[i], lat[i], layer, depth, 1,
-                             out_uuid + (size_t)i * 16);
+                             out_uuid + (size_t)i * 16) ? 1 : 0;
     return rc;
 }
 extern "C" int hex9_e4h_decode(const uint8_t uuid[16],
@@ -1545,7 +1641,8 @@ extern "C" int hex9_e4h_decode_many(const uint8_t *uuid, size_t n,
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static) reduction(|:rc)
     for (ptrdiff_t i = 0; i < N; ++i)
-        rc |= e4h_decode_one(uuid + (size_t)i * 16, 0, 0, &lon[i], &lat[i]);
+        rc |= e4h_decode_one(uuid + (size_t)i * 16, 0, 0,
+                             &lon[i], &lat[i]) ? 1 : 0;
     return rc;
 }
 extern "C" int hex9_e4h_decode_many_sphere(const uint8_t *uuid, size_t n,
@@ -1554,7 +1651,8 @@ extern "C" int hex9_e4h_decode_many_sphere(const uint8_t *uuid, size_t n,
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static) reduction(|:rc)
     for (ptrdiff_t i = 0; i < N; ++i)
-        rc |= e4h_decode_one(uuid + (size_t)i * 16, 1, 0, &lon[i], &lat[i]);
+        rc |= e4h_decode_one(uuid + (size_t)i * 16, 1, 0,
+                             &lon[i], &lat[i]) ? 1 : 0;
     return rc;
 }
 extern "C" int hex9_e4h_partner(const uint8_t uuid[16],
@@ -1604,6 +1702,40 @@ extern "C" int hex9_e4h_depth(const uint8_t uuid[16]) {
 
 extern "C" int hex9_is_e4h(const uint8_t uuid[16]) {
     return uuid ? h9e4h_is_marked(uuid) : 0;
+}
+
+extern "C" int hex9_e4h_mode(const uint8_t uuid[16]) {
+    return uuid ? e4h_mode_of(uuid) : -1;
+}
+
+extern "C" int hex9_e4h_hex(const uint8_t uuid[16], uint8_t out_uuid[16]) {
+    if (!uuid || !out_uuid) return E4H_EBAD;
+    const int m = e4h_mode_of(uuid);
+    if (m < 0) return E4H_EGRAM;
+    if (m == 0) {                       /* already the canonical member */
+        std::memcpy(out_uuid, uuid, 16);
+        return 0;
+    }
+    uint8_t v[16];
+    const int rc = e4h_partner_uuid(uuid, v);
+    if (rc) return rc;
+    /* the pair law says the partner MUST be mode-0; a violation would mean
+     * a knife-edge partner re-encode — refuse rather than mint a second
+     * name for the same hexagon */
+    if (e4h_mode_of(v) != 0) return E4H_EBAD;
+    std::memcpy(out_uuid, v, 16);
+    return 0;
+}
+
+extern "C" int hex9_e4h_hex_many(const uint8_t *uuid, size_t n,
+                                 uint8_t *out_uuid) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= hex9_e4h_hex(uuid + (size_t)i * 16,
+                           out_uuid + (size_t)i * 16) ? 1 : 0;
+    return rc;
 }
 
 extern "C" int hex9_e4h_label(const uint8_t uuid[16], char *buf,
@@ -1718,6 +1850,16 @@ struct H9KeyHash {
 
 H9Key h9v_key(const uint8_t *p) { H9Key k; std::memcpy(k.data(), p, 16); return k; }
 
+/* is this a bin key at exactly `layer`? (body to `layer`, solid 0xF pad) */
+bool h9v_is_bin_at(const uint8_t key[16], int layer) {
+    uint8_t nib[32];
+    h9a_unpack(key, nib);
+    if (nib[layer] == 0x0Fu) return false;
+    for (int i = layer + 1; i <= H9_NIB_TAIL - 1; ++i)
+        if (nib[i] != 0x0Fu) return false;
+    return true;
+}
+
 /* bin key -> centroid (representative point) */
 int h9v_centroid(const uint8_t key[16], double *lon, double *lat) {
     return hex9_decode(key, lon, lat);
@@ -1808,7 +1950,13 @@ extern "C" int64_t hex9_walk_to(const uint8_t src_key[16],
     if (!src_key || !dest_key || !out_keys || max_cells <= 0 ||
         layer < 0 || layer > H9_LMAX) return -1;
     if (h9e4h_is_marked(src_key) || h9e4h_is_marked(dest_key)) return -1;
+    /* walk matches keys by COMPARISON, so wrong-form input (a full uuid,
+     * a bin at another layer) would silently exhaust max_expand and read
+     * as "no path" — reject it loudly instead (2.3.0 review). */
+    if (!h9v_is_bin_at(src_key, layer) || !h9v_is_bin_at(dest_key, layer))
+        return -1;
     if (max_expand <= 0) max_expand = 5000;
+    if (max_expand > 1000000) return -1;   /* memory cap — see hex9_c.h */
 
     std::unordered_set<H9Key, H9KeyHash> block;
     for (size_t i = 0; i < n_obstacles; ++i)

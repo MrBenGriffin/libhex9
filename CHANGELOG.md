@@ -10,7 +10,7 @@ address.
 
 ---
 
-## [2.3.0] — unreleased
+## [2.3.0] — 2026-08-05
 
 ### Added — universality made citable, and curve labels reach the wheel
 
@@ -88,12 +88,60 @@ ADDRESSES (ruling 2026-08-04), and no existing h9/curve address moves.
   filtered — reproduced byte-exactly by `test/e4h_parity.c`. Structural
   laws (count law `2·4^d`, decode→encode identity, truncation=binning,
   budget boundary, grammar rejects, matched-pair involution, guards) in
-  `test/e4h.c`. Universality doctrine addendum in `docs/universality.md`.
+  `test/e4h.c`, plus a GLOBAL census at host layer 1: all 108 hosts × all
+  tail combinations at depths 0/1 — exactly 216/864 unique addresses
+  (2·4^d per host), every one decode→encode stable, and the partner
+  involution partitions them into exactly 108/432 fine hexagons (108×4 at
+  depth 1 — addresses are half-trapezoids, hexagons are matched pairs;
+  both counts pinned so they cannot be conflated). Universality doctrine
+  addendum in `docs/universality.md`.
 - Python: `hex9.e4h_encode/e4h_decode/e4h_partner/e4h_split/e4h_bin/`
   `e4h_depth/e4h_label/e4h_parse_label/is_e4h` (batch numpy shapes, sphere
   kwarg, label batch overload). `wheel_pin.py` gains four E4H pins (to
   depth 28) plus guard checks on every wheel platform; `hex9.selftest()`
   now re-mints 10 pins (9 h9/curve + 1 full-budget E4H).
+
+### Added — hexagon binning: `e4h_hex`, the GIS surface (ruling 2026-08-05)
+
+E4H addresses are HALF-hex trapezoids; the fine HEXAGONS are the matched
+pairs, and most straddle parent/host boundaries. `hex9_e4h_hex` (+`_many`,
+python `e4h_hex`, SQL/DuckDB `h9e_hex`) returns the CANONICAL HEXAGON KEY:
+the pair's **mode-0** member, where mode is the parity of the descent's
+rotation accumulator — pure integer arithmetic on the address, exposed as
+`hex9_e4h_mode`/`e4h_mode`/`h9e_mode`. Both halves of every pair map to
+one key (idempotent), and every host owns exactly 4^depth hexagons — the
+aperture count, so host-level roll-ups of hexagon bins partition evenly.
+Datum-free (the pairing and the mode are structural; no `_sphere` twins).
+The mode formula was derived from hhg9's verified transport-mode ownership
+doctrine and machine-checked against the geometric triangle-parity oracle
+on 20,608 census addresses (11,840 pairs, 820 cross-seam): mode ≡ s mod 2
+exactly, with no base term. Pinned by the layer-1 census in `test/e4h.c`
+(108/432 canonical keys, 4-per-host balance), byte-pinned hexagon keys per
+platform in `wheel_pin.py`, and law rows in pg_regress + sqllogictest.
+
+### Fixed — 2.3.0 pre-release review (three-agent adversarial pass)
+
+All three reviews returned positive verdicts (the exact classifier "sound
+to freeze"; C verbs bit-equivalent to the python module under randomized
+fuzz; SQL surfaces solid). Remediations:
+
+- Curve-uuids are now rejected by `hex9_decode(_sphere/_many)`,
+  `hex9_bin(_many)`, `hex9_label(_key)` — previously they fell through the
+  resolution machinery and silently minted wrong-hemisphere points and
+  plausible-looking fake bins (the marker-guard doctrine now covers BOTH
+  foreign kinds; the verbs inherit the guard through their centroid path).
+- `hex9_disk_ncells` caps k (int64 overflow at k ≳ 1.75e9 could bypass
+  callers' 60M-cell guards — UB, though provably no memory corruption).
+- `hex9_walk_to` rejects wrong-form src/dest (a full uuid or wrong-layer
+  bin previously burned max_expand and read as "no path"), and caps
+  max_expand at 1e6 (heap-allocation exposure at absurd values).
+- E4H batch forms report 0/1 (per-item codes blended under OR: 1|2 read
+  as the seam code 3).
+- The generator's descent bit bound now covers the runtime guard box
+  (109 → 113 bits; still 14 bits of __int128 margin — comment-level).
+- `hex9.selftest()` round-trip now checks longitude (cos-scaled, wrapped),
+  not just latitude; one exact-FP bearing pin in each SQL test relaxed to
+  1e-9 tolerance (libm-portability).
 
 ### Added — take 2: the verbs and E4H reach SQL (PostGIS + DuckDB)
 

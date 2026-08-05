@@ -60,10 +60,10 @@ extern "C" {
  * invisible in the data. Consumers that persist addresses SHOULD refuse to
  * start on a mismatch: see postgis_hex9's _PG_init for the pattern.
  */
-#define HEX9_VERSION       "2.2.1"
+#define HEX9_VERSION       "2.3.0"
 #define HEX9_VERSION_MAJOR 2
-#define HEX9_VERSION_MINOR 2
-#define HEX9_VERSION_PATCH 1
+#define HEX9_VERSION_MINOR 3
+#define HEX9_VERSION_PATCH 0
 
 /* ── Lifecycle / configuration ─────────────────────────────────────────────
  *
@@ -717,9 +717,14 @@ int64_t hex9_k_disk(const uint8_t uuid[16], int layer, int k,
  *   aim         : the neighbour whose centroid bearing best matches.
  *   walk_to     : shortest hex path src → dest (A* over hex9_neighbors,
  *                 obstacle keys impassable; dest passable even if listed).
- *                 Writes the key list (first = src, last = dest); returns
- *                 the count, 0 when no path within max_expand node
- *                 expansions (max_expand <= 0 selects the default 5000),
+ *                 src/dest MUST be bin keys at `layer` — the walk matches
+ *                 keys by comparison, so wrong-form input (a full uuid, a
+ *                 bin at another layer) is rejected (-1) rather than
+ *                 silently reading as "no path". Writes the key list
+ *                 (first = src, last = dest); returns the count, 0 when
+ *                 no path within max_expand node expansions (max_expand
+ *                 <= 0 selects the default 5000; values above 1,000,000
+ *                 are rejected — the frontier is heap-allocated),
  *                 -1 on error / out buffer too small.
  *   vision_cone : keys within k rings, within half_angle of bearing, and
  *                 not occluded by an obstacle key (sight lines sampled at
@@ -808,6 +813,26 @@ int  hex9_e4h_split(const uint8_t uuid[16], uint8_t out_host[16],
 int  hex9_e4h_bin(const uint8_t uuid[16], int depth, uint8_t out_uuid[16]);
 int  hex9_e4h_depth(const uint8_t uuid[16]);   /* tail digit count, -1 if not E4H */
 int  hex9_is_e4h(const uint8_t uuid[16]);      /* 1 iff any nibble == 0xE */
+
+/* ── Hexagon binning (the GIS surface) ─────────────────────────────────────
+ * E4H addresses are HALF-hex trapezoids; the fine HEXAGONS are the matched
+ * pairs, and most straddle parent/host boundaries. hex9_e4h_hex returns the
+ * CANONICAL HEXAGON KEY: the pair's MODE-0 member (ruling 2026-08-05) —
+ * mode is the parity of the descent's rotation accumulator, pure integer
+ * arithmetic on the address (hex9_e4h_mode exposes it). The two halves of
+ * every pair carry opposite mode, so hex(u) == hex(partner-of-u): both
+ * halves of a hexagon share one key, and every host owns exactly 4^d
+ * hexagons (the aperture count — host-level roll-ups of hexagon bins
+ * partition evenly; machine-verified, transport-tilings §4b doctrine).
+ * DATUM-FREE: the pairing and the mode are structural (chart-side), so
+ * there are no _sphere twins and never will be. Counts at (layer L,
+ * depth d): 12·9^L·2·4^d half addresses, 12·9^L·4^d hexagon keys.
+ * hex9_e4h_hex is idempotent; output is itself an E4H address (feed it to
+ * decode/label/bin like any other). Returns 0/1/2 per the family's error
+ * codes; hex9_e4h_mode returns 0/1, or -1 if not E4H. */
+int  hex9_e4h_hex(const uint8_t uuid[16], uint8_t out_uuid[16]);
+int  hex9_e4h_hex_many(const uint8_t *uuid, size_t n, uint8_t *out_uuid);
+int  hex9_e4h_mode(const uint8_t uuid[16]);
 int  hex9_e4h_label(const uint8_t uuid[16], char *buf, size_t buflen);
 int  hex9_e4h_parse_label(const char *label, uint8_t out_uuid[16]);
 

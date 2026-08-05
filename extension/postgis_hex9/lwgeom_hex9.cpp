@@ -1801,3 +1801,29 @@ Datum h9_bearing_to_true(PG_FUNCTION_ARGS) {
 	                                      PG_GETARG_FLOAT8(1)));
 }
 } /* extern "C" */
+
+/* ── E4H hexagon binning (Hex9 2.3.0; ruling 2026-08-05) ────────────────────
+ * E4H addresses are HALF-hex trapezoids; the fine hexagons are the matched
+ * pairs. h9e_hex names each hexagon by its MODE-0 member (mode = parity of
+ * the descent rotation accumulator — pure address arithmetic): both halves
+ * map to one key, idempotent, and every host owns exactly 4^depth hexagons
+ * (the aperture count — host roll-ups of hexagon bins partition evenly). */
+extern "C" {
+PG_FUNCTION_INFO_V1(h9e_hex);
+Datum h9e_hex(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	uint8_t out[UUID_LEN];
+	if (hex9_e4h_hex(u->data, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9e_hex: not an E4H uuid")));
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+PG_FUNCTION_INFO_V1(h9e_mode);
+Datum h9e_mode(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	PG_RETURN_INT32(hex9_e4h_mode(u->data));
+}
+} /* extern "C" */

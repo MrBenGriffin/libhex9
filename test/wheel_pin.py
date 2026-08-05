@@ -77,6 +77,28 @@ for elon, elat, elayer, edepth, ewant, elabel in E4H_PINS:
                          layer=elayer, depth=max(0, edepth - 1))
     assert (b == eb).all(), "e4h truncation != binning"
 
+# 1c-bis. hexagon binning (the GIS surface): the canonical hexagon key is
+#     the matched pair's MODE-0 member — pinned byte-exactly per E4H pin
+#     (the depth-28 pin is mode-1, so its key is its partner's address).
+E4H_HEX = [
+    "9856124e012ffffffffffffffffffff1",
+    "a02518026e01333ffffffffffffffff0",
+    "544e00110512512055001ffffffffff0",
+    "3e110015540001004050555110544510",
+]
+for (elon, elat, elayer, edepth, ewant, _), ehex in zip(E4H_PINS, E4H_HEX):
+    eu = hex9.e4h_encode(np.array([elon]), np.array([elat]),
+                         layer=elayer, depth=edepth)
+    hx = hex9.e4h_hex(eu)
+    assert hx[0].tobytes().hex() == ehex, \
+        f"UNIVERSALITY VIOLATION (e4h_hex L{elayer}D{edepth})"
+    assert (hex9.e4h_hex(hx) == hx).all(), "e4h_hex not idempotent"
+    assert int(hex9.e4h_mode(hx)[0]) == 0, "hex key not mode-0"
+    plon, plat = hex9.e4h_partner(eu)
+    pv = hex9.e4h_encode(np.array([plon[0]]), np.array([plat[0]]),
+                         layer=elayer, depth=edepth)
+    assert (hex9.e4h_hex(pv) == hx).all(), "pair members disagree on hex key"
+
 # 1d. the E4H marker guard: h9 machinery must reject 0xE-marked uuids.
 _e4h_u = hex9.e4h_encode(np.array([0.5]), np.array([0.5]), layer=6, depth=2)
 try:

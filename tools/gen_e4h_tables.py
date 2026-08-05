@@ -147,10 +147,13 @@ def m_norm(m):
 
 G = max(m_norm(m) for m in M_INT)
 MAX_DEPTH = 28                       # deepest tail (layer 0 host)
-W0_BITS = SIGMA + 3                  # |w| <= ~4 in the canonical frame
-BITS = W0_BITS + 3                   # slack for the B subtraction
+# Bound over the RUNTIME GUARD BOX (h9e4h_descend admits |w| <= 64, far
+# beyond any real seed): seed magnitude <= 64*2^SIGMA (SIGMA+6 bits), then
+# per-level growth G, then the score stage (2w, minus P2*2^SIGMA, ring-
+# multiplied by E2 with row norm 8) adds the +5 slack.
+W0_BITS = SIGMA + 6
 g_bits = math.log2(G)
-BITS = math.ceil(W0_BITS + MAX_DEPTH * g_bits) + 4   # +4: score products/margins
+BITS = math.ceil(W0_BITS + MAX_DEPTH * g_bits) + 5
 assert BITS <= 120, f'descent bound {BITS} bits exceeds __int128 comfort'
 
 # ── seam tables: per (mode, corner k) unfold + fold affines ──────────

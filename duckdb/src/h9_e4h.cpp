@@ -169,6 +169,29 @@ static void H9eParseLabelFn(DataChunk &args, ExpressionState &, Vector &result) 
 	});
 }
 
+/* hexagon binning: canonical key = the matched pair's MODE-0 member
+ * (ruling 2026-08-05; mode = descent rotation parity, pure address
+ * arithmetic). Both halves map to one key; every host owns exactly
+ * 4^depth hexagons. */
+static void H9eHexFn(DataChunk &args, ExpressionState &, Vector &result) {
+	UnaryExecutor::Execute<hugeint_t, hugeint_t>(args.data[0], result, args.size(), [](hugeint_t v) {
+		uint8_t u[16], out[16];
+		H9UuidToBytes(v, u);
+		if (hex9_e4h_hex(u, out) != 0) {
+			throw InvalidInputException("h9e_hex: not an E4H uuid");
+		}
+		return H9BytesToUuid(out);
+	});
+}
+
+static void H9eModeFn(DataChunk &args, ExpressionState &, Vector &result) {
+	UnaryExecutor::Execute<hugeint_t, int32_t>(args.data[0], result, args.size(), [](hugeint_t v) {
+		uint8_t u[16];
+		H9UuidToBytes(v, u);
+		return int32_t(hex9_e4h_mode(u));
+	});
+}
+
 /* ── grid verbs ─────────────────────────────────────────────────────────── */
 
 /* TRUE (geodesic, WGS84) azimuth <-> the verbs' bearing convention (the
@@ -356,6 +379,8 @@ void RegisterH9E4h(ExtensionLoader &loader) {
 	loader.RegisterFunction(ScalarFunction("h9e_host", {UUID}, UUID, H9eHostFn));
 	loader.RegisterFunction(ScalarFunction("h9e_label", {UUID}, STR, H9eLabelFn));
 	loader.RegisterFunction(ScalarFunction("h9e_parse_label", {STR}, UUID, H9eParseLabelFn));
+	loader.RegisterFunction(ScalarFunction("h9e_hex", {UUID}, UUID, H9eHexFn));
+	loader.RegisterFunction(ScalarFunction("h9e_mode", {UUID}, I32, H9eModeFn));
 
 	loader.RegisterFunction(ScalarFunction("h9_bearing_from_true", {DBL, DBL}, DBL, H9BearingFromTrueFn));
 	loader.RegisterFunction(ScalarFunction("h9_bearing_to_true", {DBL, DBL}, DBL, H9BearingToTrueFn));

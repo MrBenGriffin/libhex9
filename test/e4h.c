@@ -180,6 +180,154 @@ int main(void)
         CHECK(checked >= 1, "no non-centre pair exercised");
     }
 
+    /* ── global census at host layer 1: counts, uniqueness, pairing ──
+     * All 108 L1 host cells (9 children of each of the 12 L0 roots), all
+     * E4H addresses over them at tail depth 0 and 1. Pins the two counts
+     * that are easy to conflate: ADDRESSES are half-trapezoids — count
+     * law 2*4^d per host, so 108*2 = 216 at d0 and 108*8 = 864 at d1 —
+     * while matched pairs stitch them into FINE HEXAGONS two at a time:
+     * 108 at d0 (the hosts themselves) and 108*4 = 432 at d1. Pairing is
+     * GLOBAL (cross-host, across octant seams, around cone points), so
+     * the partner involution partitioning the census exactly is a strong
+     * closure check at coarse layers where every root is seam-bearing. */
+    {
+        uint8_t hosts[108][16];
+        int nh = 0;
+        for (int r = 0; r < 12; ++r) {
+            char lab[4] = { "0123456789ab"[r], 0 };
+            uint8_t l0[16], kids[9][16];
+            CHECK(hex9_parse_label(lab, l0) == 0, "census: L0 '%s'", lab);
+            CHECK(hex9_cell_children(l0, (uint8_t *)kids) == 0,
+                  "census: children of '%s'", lab);
+            for (int c = 0; c < 9; ++c) memcpy(hosts[nh++], kids[c], 16);
+        }
+        CHECK(nh == 108, "census: %d hosts != 108", nh);
+        for (int i = 0; i < nh; ++i)
+            for (int j = i + 1; j < nh; ++j)
+                if (memcmp(hosts[i], hosts[j], 16) == 0)
+                    CHECK(0, "census: duplicate host %d/%d", i, j);
+
+        static uint8_t cen[864][16];
+        for (int d = 0; d <= 1; ++d) {
+            const int per_host = d ? 8 : 2;          /* 2*4^d */
+            const long combos = d ? 12 : 2;          /* 2*6^d candidates */
+            int n = 0;
+            for (int hI = 0; hI < nh; ++hI) {
+                uint8_t nib[32];
+                unpack(hosts[hI], nib);
+                int valid = 0;
+                for (long c = 0; c < combos; ++c) {
+                    nib[3] = (uint8_t)(c % 2);       /* half at L1+2 */
+                    if (d) nib[4] = (uint8_t)(c / 2);
+                    nib[2] = 0xE;
+                    uint8_t u[16];
+                    pack(nib, u);
+                    double lon, lat;
+                    if (hex9_e4h_decode(u, &lon, &lat)) continue;
+                    uint8_t r[16];
+                    CHECK(hex9_e4h_encode(lon, lat, 1, d, r) == 0 &&
+                          memcmp(u, r, 16) == 0,
+                          "census: roundtrip moved (host %d c %ld d %d)",
+                          hI, c, d);
+                    memcpy(cen[n++], u, 16);
+                    valid++;
+                }
+                CHECK(valid == per_host,
+                      "census: host %d has %d cells at d%d, want %d",
+                      hI, valid, d, per_host);
+            }
+            const int want = 108 * per_host;
+            CHECK(n == want, "census d%d: %d addresses != %d", d, n, want);
+            for (int i = 0; i < n; ++i) {
+                for (int j = i + 1; j < n; ++j)
+                    if (memcmp(cen[i], cen[j], 16) == 0)
+                        CHECK(0, "census d%d: duplicate address", d);
+                CHECK(hex9_is_e4h(cen[i]) == 1, "census: not marked");
+            }
+            /* matched pairs partition the census into fine hexagons */
+            static int mate[864];
+            for (int i = 0; i < n; ++i) mate[i] = -1;
+            int pairs = 0;
+            for (int i = 0; i < n; ++i) {
+                if (mate[i] >= 0) continue;
+                double lon, lat;
+                uint8_t v[16];
+                CHECK(hex9_e4h_partner(cen[i], &lon, &lat) == 0,
+                      "census: partner rc (i %d d %d)", i, d);
+                CHECK(hex9_e4h_encode(lon, lat, 1, d, v) == 0,
+                      "census: partner encode (i %d d %d)", i, d);
+                int j = -1;
+                for (int t = 0; t < n; ++t)
+                    if (memcmp(cen[t], v, 16) == 0) { j = t; break; }
+                CHECK(j >= 0 && j != i && mate[j] < 0,
+                      "census: partner not a fresh census member (i %d)", i);
+                if (j < 0 || j == i || mate[j] >= 0) break;
+                /* involution: the partner's partner is me */
+                CHECK(hex9_e4h_partner(v, &lon, &lat) == 0 &&
+                      hex9_e4h_encode(lon, lat, 1, d, v) == 0 &&
+                      memcmp(v, cen[i], 16) == 0,
+                      "census: involution broke (i %d d %d)", i, d);
+                if (d) {                 /* pairs share the final digit */
+                    uint8_t ni[32], nj[32];
+                    unpack(cen[i], ni);
+                    unpack(cen[mate[i] >= 0 ? mate[i] : j], nj);
+                    CHECK(ni[4] == nj[4],
+                          "census: pair digits %d != %d", ni[4], nj[4]);
+                }
+                mate[i] = j;
+                mate[j] = i;
+                pairs++;
+            }
+            const int want_hex = 108 * (d ? 4 : 1);
+            CHECK(pairs == want_hex,
+                  "census d%d: %d fine hexagons != %d", d, pairs, want_hex);
+
+            /* hexagon binning: ONE canonical key per pair — the mode-0
+             * half (ruling 2026-08-05) — shared by both members,
+             * idempotent, and owned 4^d-per-host (the aperture count:
+             * host-level roll-ups of hexagon bins partition evenly) */
+            static int owned[108];
+            for (int i = 0; i < nh; ++i) owned[i] = 0;
+            int canon = 0;
+            for (int i = 0; i < n; ++i) {
+                uint8_t hx[16], hx2[16], hxm[16];
+                const int mu = hex9_e4h_mode(cen[i]);
+                CHECK(mu == 0 || mu == 1, "census: mode rc (i %d)", i);
+                CHECK(hex9_e4h_mode(cen[mate[i]]) == 1 - mu,
+                      "census: pair modes not opposite (i %d)", i);
+                CHECK(hex9_e4h_hex(cen[i], hx) == 0, "census: hex rc (i %d)", i);
+                CHECK(memcmp(hx, cen[i], 16) == 0 ||
+                      memcmp(hx, cen[mate[i]], 16) == 0,
+                      "census: hex key not a pair member (i %d)", i);
+                CHECK(hex9_e4h_hex(cen[mate[i]], hxm) == 0 &&
+                      memcmp(hx, hxm, 16) == 0,
+                      "census: pair members disagree on hex key (i %d)", i);
+                CHECK(hex9_e4h_hex(hx, hx2) == 0 && memcmp(hx, hx2, 16) == 0,
+                      "census: hex not idempotent (i %d)", i);
+                CHECK(hex9_e4h_mode(hx) == 0, "census: hex key not mode-0");
+                if (memcmp(hx, cen[i], 16) == 0) {
+                    canon++;
+                    uint8_t hh[16], hdig[28];
+                    int hhalf, hnd;
+                    CHECK(hex9_e4h_split(hx, hh, &hhalf, hdig, &hnd) == 0,
+                          "census: hex split");
+                    int hI = -1;
+                    for (int t = 0; t < nh; ++t)
+                        if (memcmp(hh, hosts[t], 16) == 0) { hI = t; break; }
+                    CHECK(hI >= 0, "census: hex host not in census");
+                    if (hI >= 0) owned[hI]++;
+                }
+            }
+            CHECK(canon == want_hex,
+                  "census d%d: %d canonical keys != %d", d, canon, want_hex);
+            const int per = d ? 4 : 1;
+            for (int t = 0; t < nh; ++t)
+                CHECK(owned[t] == per,
+                      "census d%d: host %d owns %d hexagons, want %d",
+                      d, t, owned[t], per);
+        }
+    }
+
     /* ── marker guards: every h9/curve entry point rejects E4H input ── */
     {
         uint8_t u[16], full[16], curve[16], out[16 * 16];
@@ -194,6 +342,14 @@ int main(void)
         CHECK(hex9_curve(full, curve) == 0, "plain curve");
         CHECK(hex9_is_e4h(full) == 0 && hex9_is_e4h(curve) == 0,
               "is_e4h false positives");
+
+        /* the sibling hazard: curve uuids must be rejected too, not
+         * resolved into wrong-hemisphere points / fake bins */
+        CHECK(hex9_decode(curve, &lon, &lat) != 0, "guard decode(curve)");
+        CHECK(hex9_bin(curve, 8, out) != 0, "guard bin(curve)");
+        CHECK(hex9_label(curve, 8, buf, sizeof buf) < 0, "guard label(curve)");
+        CHECK(hex9_label_key(curve, 8, buf, sizeof buf) < 0,
+              "guard label_key(curve)");
 
         CHECK(hex9_decode(u, &lon, &lat) != 0, "guard decode");
         CHECK(hex9_decode_sphere(u, &lon, &lat) != 0, "guard decode_sphere");
