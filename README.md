@@ -36,6 +36,13 @@ on-disk format remains available with `-DHEX9_USE_L29=ON`.
 > [`docs/addressing-doctrine.md`](docs/addressing-doctrine.md). Read it before
 > designing anything that persists a bin label.
 
+> **Universality.** The same lon/lat mints the bit-identical uuid on every
+> conforming platform — the encode chain's floating-point program is the
+> definition of the address. The contract, the conforming-platform
+> requirements, and the regime-change procedure are in
+> [`docs/universality.md`](docs/universality.md). An installed wheel can
+> verify its own environment with `hex9.selftest()`.
+
 ## Capabilities
 
 | Area | What it gives you |

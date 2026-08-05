@@ -315,6 +315,24 @@ target_link_libraries(gen_regime_pin PRIVATE hex9)
 target_compile_definitions(gen_regime_pin PRIVATE
   H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
+# E4H structural laws + the parity corpus (test_data/e4h_pin.tsv, minted by
+# the hhg9 reference via tools/gen_e4h_pin.py). A parity uuid mismatch is a
+# regime violation for E4H addresses — regenerate deliberately, never to
+# "make it pass" (docs/universality.md).
+add_executable(e4h test/e4h.c)
+target_link_libraries(e4h PRIVATE hex9 m)
+add_test(NAME e4h COMMAND e4h)
+
+add_executable(verbs_abi test/verbs_abi.c)
+target_link_libraries(verbs_abi PRIVATE hex9 m)
+add_test(NAME verbs_abi COMMAND verbs_abi)
+
+add_executable(e4h_parity test/e4h_parity.c)
+target_link_libraries(e4h_parity PRIVATE hex9 m)
+target_compile_definitions(e4h_parity PRIVATE
+  H9_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME e4h_parity COMMAND e4h_parity)
+
 add_executable(full_id test/full_id.c)
 target_link_libraries(full_id PRIVATE hex9 m)
 add_test(NAME full_id COMMAND full_id)
@@ -406,6 +424,10 @@ if(HEX9_PYTHON)
       add_test(NAME smoke_py
                COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/smoke.py)
       set_tests_properties(smoke_py PROPERTIES
+               ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:hex9_ext>")
+      add_test(NAME verbs_py
+               COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/verbs.py)
+      set_tests_properties(verbs_py PROPERTIES
                ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:hex9_ext>")
     endif()
   else()

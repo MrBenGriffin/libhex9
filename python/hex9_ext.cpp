@@ -52,11 +52,15 @@ static nb::tuple decode(u8_2d_in uuid, bool sphere) {
     if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
     double *lon = new double[n];
     double *lat = new double[n];
+    int rc;
     {
         nb::gil_scoped_release release;
-        if (sphere) hex9_decode_many_sphere(uuid.data(), n, lon, lat);
-        else        hex9_decode_many(uuid.data(), n, lon, lat);
+        if (sphere) rc = hex9_decode_many_sphere(uuid.data(), n, lon, lat);
+        else        rc = hex9_decode_many(uuid.data(), n, lon, lat);
     }
+    if (rc) { delete[] lon; delete[] lat;
+              throw std::runtime_error("hex9.decode: E4H uuid input — "
+                                       "use e4h_decode"); }
     nb::capsule lon_o(lon, [](void *p) noexcept { delete[] static_cast<double *>(p); });
     nb::capsule lat_o(lat, [](void *p) noexcept { delete[] static_cast<double *>(p); });
     return nb::make_tuple(
@@ -473,11 +477,35 @@ kring_disk(u8_1d uuid, int layer, int k, bool ring_only) {
 /* label(uuid[16], layer, key=False) -> str */
 static std::string label(u8_1d uuid, int layer, bool key) {
     if (uuid.shape(0) != 16) throw std::runtime_error("uuid must be a (16,) uint8 array");
+    if ((uuid.data()[0] >> 4) == 0xC)
+        throw std::runtime_error("hex9.label: curve-uuid input (nibble 0 = 0xC) — "
+                                 "cell labels of curve addresses are meaningless; "
+                                 "use curve_label, or curve_decode first");
     char buf[40];
     const int len = key ? hex9_label_key(uuid.data(), layer, buf, sizeof buf)
                         : hex9_label(uuid.data(), layer, buf, sizeof buf);
     if (len < 0) throw std::runtime_error("hex9.label: invalid layer");
     return std::string(buf, (size_t)len);
+}
+
+/* label(uuids[n,16], layer, key=False) -> list[str] — batch overload */
+static nb::list label_many(u8_2d_in uuids, int layer, bool key) {
+    if (uuids.shape(1) != 16) throw std::runtime_error("uuids array must be (n, 16)");
+    const size_t n = uuids.shape(0);
+    nb::list out;
+    char buf[40];
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t *u = uuids.data() + i * 16;
+        if ((u[0] >> 4) == 0xC)
+            throw std::runtime_error("hex9.label: curve-uuid input at row " +
+                                     std::to_string(i) + " (nibble 0 = 0xC) — "
+                                     "use curve_label, or curve_decode first");
+        const int len = key ? hex9_label_key(u, layer, buf, sizeof buf)
+                            : hex9_label(u, layer, buf, sizeof buf);
+        if (len < 0) throw std::runtime_error("hex9.label: invalid layer");
+        out.append(nb::str(buf, (size_t)len));
+    }
+    return out;
 }
 
 /* parse_label(str) -> (uuid[16], layer) */
@@ -488,6 +516,42 @@ static nb::tuple parse_label(const std::string &lbl) {
     nb::capsule owner(u, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
     return nb::make_tuple(
         nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>(u, {16}, owner), layer);
+}
+
+/* curve_label(uuid[16]) -> str */
+static std::string curve_label(u8_1d uuid) {
+    if (uuid.shape(0) != 16) throw std::runtime_error("uuid must be a (16,) uint8 array");
+    char buf[40];
+    const int len = hex9_curve_label(uuid.data(), buf, sizeof buf);
+    if (len < 0) throw std::runtime_error("hex9.curve_label: invalid uuid");
+    return std::string(buf, (size_t)len);
+}
+
+/* curve_label(uuids[n,16]) -> list[str] — batch overload */
+static nb::list curve_label_many(u8_2d_in uuids) {
+    if (uuids.shape(1) != 16) throw std::runtime_error("uuids array must be (n, 16)");
+    const size_t n = uuids.shape(0);
+    nb::list out;
+    char buf[40];
+    for (size_t i = 0; i < n; ++i) {
+        const int len = hex9_curve_label(uuids.data() + i * 16, buf, sizeof buf);
+        if (len < 0) throw std::runtime_error("hex9.curve_label: invalid uuid at row " +
+                                              std::to_string(i));
+        out.append(nb::str(buf, (size_t)len));
+    }
+    return out;
+}
+
+/* curve_parse_label(str) -> curve uuid[16] */
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>
+curve_parse_label(const std::string &lbl) {
+    uint8_t *u = new uint8_t[16];
+    if (hex9_curve_parse_label(lbl.c_str(), u)) {
+        delete[] u;
+        throw std::runtime_error("hex9.curve_parse_label: invalid curve label");
+    }
+    nb::capsule owner(u, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>(u, {16}, owner);
 }
 
 /* label_centroid(str) -> (lon, lat) */
@@ -557,6 +621,154 @@ static nb::tuple adaptive(u8_2d_in uuids, int min_layer, int max_layer,
         nb::ndarray<nb::numpy, double,  nb::ndim<1>>(val, {m}, va_o),
         nb::ndarray<nb::numpy, int64_t, nb::ndim<1>>(np, {m}, np_o),
         nb::ndarray<nb::numpy, int64_t, nb::ndim<1>>(as, {n}, as_o));
+}
+
+/* ── E4H: the aperture-4 structural tail (see hex9_c.h doctrine block) ── */
+
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
+e4h_encode(f64_1d lon, f64_1d lat, int layer, int depth, bool sphere) {
+    const size_t n = lon.shape(0);
+    if (lat.shape(0) != n) throw std::runtime_error("lon and lat must be the same length");
+    uint8_t *out = new uint8_t[n * 16];
+    int rc;
+    {
+        nb::gil_scoped_release release;
+        rc = sphere
+            ? hex9_e4h_encode_many_sphere(lon.data(), lat.data(), n, layer, depth, out)
+            : hex9_e4h_encode_many(lon.data(), lat.data(), n, layer, depth, out);
+    }
+    if (rc) { delete[] out;
+              throw std::runtime_error("e4h_encode: invalid layer/depth "
+                                       "(need layer + 2 + depth <= lmax())"); }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
+static nb::tuple e4h_decode_impl(u8_2d_in uuid, bool sphere, bool partner) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    double *lon = new double[n];
+    double *lat = new double[n];
+    int rc = 0;
+    {
+        nb::gil_scoped_release release;
+        if (partner) {
+            for (size_t i = 0; i < n; ++i)
+                rc |= sphere
+                    ? hex9_e4h_partner_sphere(uuid.data() + i * 16, &lon[i], &lat[i])
+                    : hex9_e4h_partner(uuid.data() + i * 16, &lon[i], &lat[i]);
+        } else {
+            rc = sphere ? hex9_e4h_decode_many_sphere(uuid.data(), n, lon, lat)
+                        : hex9_e4h_decode_many(uuid.data(), n, lon, lat);
+        }
+    }
+    if (rc) { delete[] lon; delete[] lat;
+              throw std::runtime_error("e4h_decode: not an E4H uuid / bad grammar"); }
+    nb::capsule lon_o(lon, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    nb::capsule lat_o(lat, [](void *p) noexcept { delete[] static_cast<double *>(p); });
+    return nb::make_tuple(
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(lon, {n}, lon_o),
+        nb::ndarray<nb::numpy, double, nb::ndim<1>>(lat, {n}, lat_o));
+}
+
+/* e4h_split(uuid[n,16]) -> (host[n,16], half[n], digits[n,28] int8, -1 pad) */
+static nb::tuple e4h_split(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    uint8_t *host = new uint8_t[n * 16];
+    int32_t *half = new int32_t[n];
+    int8_t  *dig  = new int8_t[n * 28];
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t d[28];
+        int hf, nd;
+        if (hex9_e4h_split(uuid.data() + i * 16, host + i * 16, &hf, d, &nd)) {
+            delete[] host; delete[] half; delete[] dig;
+            throw std::runtime_error("e4h_split: not an E4H uuid at row "
+                                     + std::to_string(i));
+        }
+        half[i] = hf;
+        for (int j = 0; j < 28; ++j)
+            dig[i * 28 + j] = j < nd ? (int8_t)d[j] : (int8_t)-1;
+    }
+    nb::capsule h_o(host, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    nb::capsule f_o(half, [](void *p) noexcept { delete[] static_cast<int32_t *>(p); });
+    nb::capsule d_o(dig,  [](void *p) noexcept { delete[] static_cast<int8_t *>(p); });
+    return nb::make_tuple(
+        nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(host, {n, 16}, h_o),
+        nb::ndarray<nb::numpy, int32_t, nb::ndim<1>>(half, {n}, f_o),
+        nb::ndarray<nb::numpy, int8_t,  nb::ndim<2>>(dig, {n, 28}, d_o));
+}
+
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>
+e4h_bin(u8_2d_in uuid, int depth) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    uint8_t *out = new uint8_t[n * 16];
+    for (size_t i = 0; i < n; ++i)
+        if (hex9_e4h_bin(uuid.data() + i * 16, depth, out + i * 16)) {
+            delete[] out;
+            throw std::runtime_error("e4h_bin: bad depth or not E4H at row "
+                                     + std::to_string(i));
+        }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<2>>(out, {n, 16}, owner);
+}
+
+static nb::ndarray<nb::numpy, int32_t, nb::ndim<1>> e4h_depth(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    int32_t *out = new int32_t[n];
+    for (size_t i = 0; i < n; ++i)
+        out[i] = hex9_e4h_depth(uuid.data() + i * 16);
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<int32_t *>(p); });
+    return nb::ndarray<nb::numpy, int32_t, nb::ndim<1>>(out, {n}, owner);
+}
+
+static std::string e4h_label_one(u8_1d uuid) {
+    if (uuid.shape(0) != 16) throw std::runtime_error("uuid must be a (16,) uint8 array");
+    char buf[64];
+    const int len = hex9_e4h_label(uuid.data(), buf, sizeof buf);
+    if (len < 0) throw std::runtime_error("e4h_label: not an E4H uuid");
+    return std::string(buf, (size_t)len);
+}
+
+static nb::list e4h_label_many(u8_2d_in uuids) {
+    if (uuids.shape(1) != 16) throw std::runtime_error("uuids array must be (n, 16)");
+    nb::list out;
+    char buf[64];
+    for (size_t i = 0; i < uuids.shape(0); ++i) {
+        const int len = hex9_e4h_label(uuids.data() + i * 16, buf, sizeof buf);
+        if (len < 0) throw std::runtime_error("e4h_label: not an E4H uuid at row "
+                                              + std::to_string(i));
+        out.append(nb::str(buf, (size_t)len));
+    }
+    return out;
+}
+
+static nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>
+e4h_parse_label(const std::string &label) {
+    uint8_t *out = new uint8_t[16];
+    if (hex9_e4h_parse_label(label.c_str(), out)) {
+        delete[] out;
+        throw std::runtime_error("e4h_parse_label: bad label '" + label + "'");
+    }
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<uint8_t *>(p); });
+    return nb::ndarray<nb::numpy, uint8_t, nb::ndim<1>>(out, {16}, owner);
+}
+
+static bool is_e4h_one(u8_1d uuid) {
+    if (uuid.shape(0) != 16) throw std::runtime_error("uuid must be a (16,) uint8 array");
+    return hex9_is_e4h(uuid.data()) != 0;
+}
+
+static nb::ndarray<nb::numpy, bool, nb::ndim<1>> is_e4h_many(u8_2d_in uuid) {
+    const size_t n = uuid.shape(0);
+    if (uuid.shape(1) != 16) throw std::runtime_error("uuid array must be (n, 16)");
+    bool *out = new bool[n];
+    for (size_t i = 0; i < n; ++i)
+        out[i] = hex9_is_e4h(uuid.data() + i * 16) != 0;
+    nb::capsule owner(out, [](void *p) noexcept { delete[] static_cast<bool *>(p); });
+    return nb::ndarray<nb::numpy, bool, nb::ndim<1>>(out, {n}, owner);
 }
 
 /* Module name is compile-time selectable: the in-tree module stays hex9_ext
@@ -665,6 +877,8 @@ H9_NB_MODULE_(HEX9_PY_MODULE, m) {
           "Nominal k-disk cell count 1+3k(k+1) (upper bound near octahedron vertices).");
     m.def("label", &label, nb::arg("uuid"), nb::arg("layer"), nb::arg("key") = false,
           "Cell label at layer; key=True appends '.<key_tail>'.");
+    m.def("label", &label_many, nb::arg("uuids"), nb::arg("layer"), nb::arg("key") = false,
+          "Batch form: (n,16) uuids -> list of n labels.");
     m.def("parse_label", &parse_label, nb::arg("label"),
           "Label (bare canonical, or keyed '.k' any flavour) -> (canonical bin uuid[16], layer).");
     m.def("label_centroid", &label_centroid, nb::arg("label"),
@@ -680,6 +894,46 @@ H9_NB_MODULE_(HEX9_PY_MODULE, m) {
     m.def("curve_decode", &curve_decode, nb::arg("uuid"),
           "Constructive inverse: (n,16) curve-uuids -> canonical bin uuids at "
           "each curve address's layer. h9-uuid input passes through.");
+    m.def("curve_label", &curve_label, nb::arg("uuid"),
+          "Human-readable curve label 'c<slot><base-9 ranks>' (e.g. 'c112504') "
+          "of one (16,) uuid — purely positional, length carries the layer. "
+          "Accepts a cell uuid (curved first) or a curve-uuid.");
+    m.def("curve_label", &curve_label_many, nb::arg("uuids"),
+          "Batch form: (n,16) uuids -> list of n curve labels.");
+    m.def("e4h_encode", &e4h_encode, nb::arg("lon"), nb::arg("lat"),
+          nb::arg("layer") = 6, nb::arg("depth") = 2, nb::arg("sphere") = false,
+          "E4H addresses: h9 host bin at `layer` + 0xE marker + half + `depth` "
+          "aperture-4 tail digits (exact classifier — bit-identical on every "
+          "platform; see docs/universality.md). (n,16) uint8.");
+    m.def("e4h_decode",
+          [](u8_2d_in u, bool sphere) { return e4h_decode_impl(u, sphere, false); },
+          nb::arg("uuid"), nb::arg("sphere") = false,
+          "Representative (lon, lat) of each E4H leaf trapezoid centroid.");
+    m.def("e4h_partner",
+          [](u8_2d_in u, bool sphere) { return e4h_decode_impl(u, sphere, true); },
+          nb::arg("uuid"), nb::arg("sphere") = false,
+          "Representative (lon, lat) of each leaf's PARTNER half — the other "
+          "half of the same fine hexagon (matched pairs share the final digit).");
+    m.def("e4h_split", &e4h_split, nb::arg("uuid"),
+          "(host[n,16], half[n], digits[n,28] int8, -1-padded) of E4H uuids.");
+    m.def("e4h_bin", &e4h_bin, nb::arg("uuid"), nb::arg("depth"),
+          "Truncate the aperture-4 tail to `depth` digits — suffix-local "
+          "binning (exact, unlike the a9 body digits).");
+    m.def("e4h_depth", &e4h_depth, nb::arg("uuid"),
+          "Tail digit count per uuid; -1 where not E4H.");
+    m.def("e4h_label", &e4h_label_one, nb::arg("uuid"),
+          "Label '<h9-label>E<half><digits>' for a (16,) E4H uuid.");
+    m.def("e4h_label", &e4h_label_many, nb::arg("uuids"),
+          "Batch overload: (n,16) -> list of labels.");
+    m.def("e4h_parse_label", &e4h_parse_label, nb::arg("label"),
+          "Parse an E4H label back to its (16,) uuid.");
+    m.def("is_e4h", &is_e4h_one, nb::arg("uuid"),
+          "True iff the (16,) uuid is E4H (any nibble == 0xE — decisive: 0xE "
+          "cannot occur in h9 or curve uuids).");
+    m.def("is_e4h", &is_e4h_many, nb::arg("uuids"),
+          "Batch overload: (n,16) -> bool[n].");
+    m.def("curve_parse_label", &curve_parse_label, nb::arg("label"),
+          "Curve label -> curve-uuid (16,) (inverse of curve_label).");
     m.def("cell_children", &cell_children, nb::arg("uuid"),
           "The 9 canonical children of each (n,16) cell -> (n,9,16), in "
           "CURVE-RANK order (one generation: lineage == ownership).");

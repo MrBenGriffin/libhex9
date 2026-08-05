@@ -1,0 +1,128 @@
+# name: test/sql/h9_e4h.test
+# description: E4H aperture-4 tail + grid verbs (aim / walk_to / vision_cone)
+# group: [h9]
+
+require hex9
+
+# ── E4H pinned mint — universality: bit-identical everywhere ──────────────────
+# (cf. libhex9 test_data/e4h_pin.tsv and test/wheel_pin.py)
+
+query I
+SELECT h9e_encode(-3.19, 55.95, 6, 4);
+----
+4321774e-0150-5fff-ffff-fffffffffff3
+
+query I
+SELECT h9e_label(h9e_encode(-3.19, 55.95, 6, 4));
+----
+4321774E01505
+
+# ── structural laws ───────────────────────────────────────────────────────────
+
+query IIIII
+SELECT h9_is_e4h(u),
+       NOT h9_is_e4h(h9_encode(-3.19, 55.95)),
+       h9e_depth(u) = 4,
+       h9e_parse_label(h9e_label(u)) = u,
+       h9e_host(u) = h9_bin(h9_encode(-3.19, 55.95), 6)
+FROM (SELECT h9e_encode(-3.19, 55.95, 6, 4) AS u);
+----
+true	true	true	true	true
+
+# truncation IS binning (suffix-local, exact)
+query I
+SELECT h9e_bin(h9e_encode(-3.19, 55.95, 6, 4), 2) = h9e_encode(-3.19, 55.95, 6, 2);
+----
+true
+
+# decode lands inside the leaf (well under a host cell of ~5 km at L6)
+query I
+SELECT abs(h9e_decode(u).lon + 3.19) < 0.01 AND abs(h9e_decode(u).lat - 55.95) < 0.01
+FROM (SELECT h9e_encode(-3.19, 55.95, 6, 4) AS u);
+----
+true
+
+# matched pairs: partner differs, shares the final digit, involution
+query III
+SELECT v <> u,
+       right(h9e_label(v), 1) = right(h9e_label(u), 1),
+       h9e_encode(h9e_partner(v).lon, h9e_partner(v).lat, 6, 4) = u
+FROM (SELECT u, h9e_encode(h9e_partner(u).lon, h9e_partner(u).lat, 6, 4) AS v
+      FROM (SELECT h9e_encode(-3.19, 55.95, 6, 4) AS u));
+----
+true	true	true
+
+# nibble budget boundary
+statement error
+SELECT h9e_encode(-3.19, 55.95, 6, 23);
+----
+
+# the 0xE marker guard: h9 machinery rejects E4H input
+statement error
+SELECT h9_bin(h9e_encode(-3.19, 55.95, 6, 2), 4);
+----
+
+statement error
+SELECT h9_decode(h9e_encode(-3.19, 55.95, 6, 2));
+----
+
+# ── grid verbs (field straddles the equator octant seam) ──────────────────────
+
+# aim: moves to a neighbour; walking to it is a single step
+query II
+SELECT h9_aim(fox, 8, 15.0) <> fox,
+       h9_walk_to(fox, h9_aim(fox, 8, 15.0), 8) = [fox, h9_aim(fox, 8, 15.0)]
+FROM (SELECT h9_bin(h9_encode(35.02, -0.02), 8) AS fox);
+----
+true	true
+
+# walk to self is the single-cell path
+query I
+SELECT h9_walk_to(fox, fox, 8) = [fox]
+FROM (SELECT h9_bin(h9_encode(35.02, -0.02), 8) AS fox);
+----
+true
+
+# cone: src visible, cone within disk, full circle == disk, crosses the seam
+query IIII
+SELECT list_contains(cone, fox),
+       len(list_filter(cone, c -> NOT list_contains(disk, c))) = 0,
+       len(h9_vision_cone(fox, 8, 0.0, 180.0, 3)) = len(disk),
+       len(list_filter(cone, c -> h9_decode(c).lat > 0)) > 0
+       AND len(list_filter(cone, c -> h9_decode(c).lat < 0)) > 0
+FROM (SELECT fox, h9_vision_cone(fox, 8, 15.0, 32.0, 3) AS cone,
+             h9_kdisk(h9_encode(35.02, -0.02), 8, 3) AS disk
+      FROM (SELECT h9_bin(h9_encode(35.02, -0.02), 8) AS fox));
+----
+true	true	true	true
+
+# occlusion: the cell straight behind a blocker is shadowed; the blocker's
+# own face stays visible; obstacles never reveal anything new
+query III
+SELECT list_contains(seen, a1),
+       NOT list_contains(seen, a2),
+       len(list_filter(seen, c -> NOT list_contains(cone, c))) = 0
+FROM (SELECT a1, a2, cone, h9_vision_cone(fox, 8, 15.0, 32.0, 3, [a1]) AS seen
+      FROM (SELECT fox, a1, h9_aim(a1, 8, 15.0) AS a2,
+                   h9_vision_cone(fox, 8, 15.0, 32.0, 3) AS cone
+            FROM (SELECT fox, h9_aim(fox, 8, 15.0) AS a1
+                  FROM (SELECT h9_bin(h9_encode(35.02, -0.02), 8) AS fox))));
+----
+true	true	true
+
+# detour: an obstacle on the direct path forces a path that avoids it
+query III
+SELECT len(path) >= 3,
+       NOT list_contains(detour, path[2]),
+       detour[-1] = path[-1]
+FROM (SELECT path, h9_walk_to(fox, a3, 8, [path[2]]) AS detour, fox, a3
+      FROM (SELECT fox, a3, h9_walk_to(fox, a3, 8) AS path
+            FROM (SELECT fox, h9_aim(h9_aim(h9_aim(fox, 8, 15.0), 8, 15.0), 8, 15.0) AS a3
+                  FROM (SELECT h9_bin(h9_encode(35.02, -0.02), 8) AS fox))));
+----
+true	true	true
+
+# verbs reject E4H input (the marker guard)
+statement error
+SELECT h9_aim(h9e_encode(35.02, -0.02, 6, 2), 8, 0.0);
+----

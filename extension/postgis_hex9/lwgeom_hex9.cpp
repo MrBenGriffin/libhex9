@@ -1545,3 +1545,237 @@ Datum h9_cell_children(PG_FUNCTION_ARGS) {
 	});
 }
 } /* extern "C" */
+
+/* ═══ E4H: the aperture-4 structural tail (Hex9 2.3.0) ══════════════════════
+ * SQL twins over the hex9_e4h_* ABI — see hex9_c.h's E4H doctrine block and
+ * libhex9 docs/universality.md: E4H uuids are ADDRESSES minted by the exact
+ * classifier, and the h9_* machinery above rejects them (the 0xE marker
+ * guard); these are their own operations. */
+
+/* deconstruct a uuid[] argument into a packed 16-byte-row buffer */
+static size_t h9_uuid_array_bytes(ArrayType *arr, uint8_t **out) {
+	Datum *elems;
+	bool  *nulls;
+	int    n;
+	deconstruct_array(arr, UUIDOID, UUID_LEN, false, TYPALIGN_CHAR,
+	                  &elems, &nulls, &n);
+	uint8_t *buf = (uint8_t *) palloc((size_t)(n > 0 ? n : 1) * UUID_LEN);
+	size_t m = 0;
+	for (int i = 0; i < n; i++) {
+		if (nulls[i]) continue;
+		memcpy(buf + m * UUID_LEN, DatumGetUUIDP(elems[i])->data, UUID_LEN);
+		m++;
+	}
+	*out = buf;
+	return m;
+}
+
+extern "C" {
+static Datum h9e_encode_common(PG_FUNCTION_ARGS, bool sphere) {
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2)) PG_RETURN_NULL();
+	GSERIALIZED *g     = PG_GETARG_GSERIALIZED_P(0);
+	int32        layer = PG_GETARG_INT32(1);
+	int32        depth = PG_GETARG_INT32(2);
+	double lon, lat;
+	const char *err = NULL;
+	if (!geom_to_lonlat(g, &lon, &lat, &err))
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("%s", err)));
+	if (layer < 0 || depth < 0 || layer + 2 + depth > hex9_lmax())
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9e_encode: need layer >= 0, depth >= 0 and "
+						       "layer + 2 + depth <= %d (the nibble budget); "
+						       "got layer %d depth %d",
+						       hex9_lmax(), layer, depth)));
+	uint8_t u[UUID_LEN];
+	const int rc = sphere ? hex9_e4h_encode_sphere(lon, lat, layer, depth, u)
+	                      : hex9_e4h_encode(lon, lat, layer, depth, u);
+	if (rc != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9e_encode: could not encode point (%g, %g)"
+						       "%s", lon, lat,
+						       rc == 3 ? " — point two seams from its host"
+						               : "")));
+	PG_RETURN_UUID_P(make_pg_uuid(u));
+}
+
+PG_FUNCTION_INFO_V1(h9e_encode);
+Datum h9e_encode(PG_FUNCTION_ARGS) { return h9e_encode_common(fcinfo, false); }
+
+PG_FUNCTION_INFO_V1(h9e_encode_sphere);
+Datum h9e_encode_sphere(PG_FUNCTION_ARGS) { return h9e_encode_common(fcinfo, true); }
+
+static Datum h9e_point_common(PG_FUNCTION_ARGS, bool sphere, bool partner) {
+	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	double lon, lat;
+	int rc;
+	if (partner) rc = sphere ? hex9_e4h_partner_sphere(u->data, &lon, &lat)
+	                         : hex9_e4h_partner(u->data, &lon, &lat);
+	else         rc = sphere ? hex9_e4h_decode_sphere(u->data, &lon, &lat)
+	                         : hex9_e4h_decode(u->data, &lon, &lat);
+	if (rc != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("%s: not an E4H uuid (or bad tail grammar)",
+						       partner ? "h9e_partner" : "h9e_decode")));
+	PG_RETURN_POINTER(lonlat_to_geom(lon, lat, sphere ? 0 : 4326));
+}
+
+PG_FUNCTION_INFO_V1(h9e_decode);
+Datum h9e_decode(PG_FUNCTION_ARGS) { return h9e_point_common(fcinfo, false, false); }
+
+PG_FUNCTION_INFO_V1(h9e_decode_sphere);
+Datum h9e_decode_sphere(PG_FUNCTION_ARGS) { return h9e_point_common(fcinfo, true, false); }
+
+PG_FUNCTION_INFO_V1(h9e_partner);
+Datum h9e_partner(PG_FUNCTION_ARGS) { return h9e_point_common(fcinfo, false, true); }
+
+PG_FUNCTION_INFO_V1(h9e_partner_sphere);
+Datum h9e_partner_sphere(PG_FUNCTION_ARGS) { return h9e_point_common(fcinfo, true, true); }
+
+PG_FUNCTION_INFO_V1(h9e_bin);
+Datum h9e_bin(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1)) PG_RETURN_NULL();
+	pg_uuid_t *u     = PG_GETARG_UUID_P(0);
+	int32      depth = PG_GETARG_INT32(1);
+	uint8_t out[UUID_LEN];
+	if (hex9_e4h_bin(u->data, depth, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9e_bin: not an E4H uuid, or depth %d exceeds "
+						       "the tail (truncation only — the tail cannot "
+						       "be deepened)", depth)));
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+PG_FUNCTION_INFO_V1(h9e_depth);
+Datum h9e_depth(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	PG_RETURN_INT32(hex9_e4h_depth(u->data));
+}
+
+PG_FUNCTION_INFO_V1(h9_is_e4h);
+Datum h9_is_e4h(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	PG_RETURN_BOOL(hex9_is_e4h(u->data) != 0);
+}
+
+PG_FUNCTION_INFO_V1(h9e_host);
+Datum h9e_host(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	uint8_t host[UUID_LEN], digits[28];
+	int half, nd;
+	if (hex9_e4h_split(u->data, host, &half, digits, &nd) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9e_host: not an E4H uuid")));
+	PG_RETURN_UUID_P(make_pg_uuid(host));
+}
+
+PG_FUNCTION_INFO_V1(h9e_label);
+Datum h9e_label(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
+	pg_uuid_t *u = PG_GETARG_UUID_P(0);
+	char buf[64];
+	const int len = hex9_e4h_label(u->data, buf, sizeof buf);
+	if (len < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9e_label: not an E4H uuid")));
+	PG_RETURN_TEXT_P(cstring_to_text_with_len(buf, len));
+}
+
+PG_FUNCTION_INFO_V1(h9e_parse_label);
+Datum h9e_parse_label(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0)) PG_RETURN_NULL();
+	char *label = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	uint8_t u[UUID_LEN];
+	if (hex9_e4h_parse_label(label, u) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9e_parse_label: not a valid E4H label: \"%s\"",
+						       label)));
+	PG_RETURN_UUID_P(make_pg_uuid(u));
+}
+} /* extern "C" */
+
+/* ═══ Grid verbs: h9_aim / h9_walk_to / h9_vision_cone (Hex9 2.3.0) ═════════
+ * Cell-first field primitives (the SQL twins of the python wheel's
+ * hex9.verbs): bin KEYS in and out — the full-uuid re-derivation is internal
+ * (deliberately unlike the k-family, whose outputs are join keys; a verb's
+ * output is the next verb's input). Bearings are degrees clockwise from
+ * north, advisory FP over centroids — they steer, they never mint. */
+
+extern "C" {
+PG_FUNCTION_INFO_V1(h9_aim);
+Datum h9_aim(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2)) PG_RETURN_NULL();
+	pg_uuid_t *u       = PG_GETARG_UUID_P(0);
+	int32      layer   = PG_GETARG_INT32(1);
+	float8     bearing = PG_GETARG_FLOAT8(2);
+	uint8_t out[UUID_LEN];
+	if (hex9_aim(u->data, layer, bearing, out) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_aim: not a valid H9 key at layer %d "
+						       "(or non-finite bearing)", layer)));
+	PG_RETURN_UUID_P(make_pg_uuid(out));
+}
+
+PG_FUNCTION_INFO_V1(h9_walk_to);
+Datum h9_walk_to(PG_FUNCTION_ARGS) {
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2)) PG_RETURN_NULL();
+	pg_uuid_t *src   = PG_GETARG_UUID_P(0);
+	pg_uuid_t *dest  = PG_GETARG_UUID_P(1);
+	int32      layer = PG_GETARG_INT32(2);
+	uint8_t   *obs   = NULL;
+	size_t     nobs  = 0;
+	if (!PG_ARGISNULL(3))
+		nobs = h9_uuid_array_bytes(PG_GETARG_ARRAYTYPE_P(3), &obs);
+	int64_t max_expand = PG_ARGISNULL(4) ? 0 : PG_GETARG_INT32(4);
+	if (max_expand <= 0) max_expand = 5000;
+
+	const int64_t cap = max_expand + 2;
+	uint8_t *path = (uint8_t *) palloc((Size)cap * UUID_LEN);
+	const int64_t n = hex9_walk_to(src->data, dest->data, layer, obs, nobs,
+	                               max_expand, path, cap);
+	if (n < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("h9_walk_to: invalid keys or layer %d", layer)));
+	if (n == 0) PG_RETURN_NULL();          /* no path within max_expand */
+
+	Datum *res = (Datum *) palloc((size_t)n * sizeof(Datum));
+	for (int64_t i = 0; i < n; i++)
+		res[i] = UUIDPGetDatum(make_pg_uuid(path + (size_t)i * UUID_LEN));
+	int dims[1] = { (int)n };
+	int lbs[1]  = { 1 };
+	PG_RETURN_ARRAYTYPE_P(construct_md_array(res, NULL, 1, dims, lbs,
+	                                         UUIDOID, UUID_LEN, false,
+	                                         TYPALIGN_CHAR));
+}
+
+PG_FUNCTION_INFO_V1(h9_vision_cone);
+Datum h9_vision_cone(PG_FUNCTION_ARGS) {
+	return h9_uuid_set_srf(fcinfo, [&](H9UuidSetState *state) -> int64_t {
+		pg_uuid_t *u       = PG_GETARG_UUID_P(0);
+		int32      layer   = PG_GETARG_INT32(1);
+		float8     bearing = PG_GETARG_FLOAT8(2);
+		float8     half    = PG_GETARG_FLOAT8(3);
+		int32      k       = PG_GETARG_INT32(4);
+		uint8_t   *obs     = NULL;
+		size_t     nobs    = 0;
+		if (!PG_ARGISNULL(5))
+			nobs = h9_uuid_array_bytes(PG_GETARG_ARRAYTYPE_P(5), &obs);
+		if (k < 0 || hex9_disk_ncells(k) > 60000000)
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							errmsg("h9_vision_cone: k=%d out of range", k)));
+		const int64_t cap = hex9_disk_ncells(k);
+		state->uuids = (uint8_t *) palloc((Size)cap * UUID_LEN);
+		const int64_t n = hex9_vision_cone(u->data, layer, bearing, half, k,
+		                                   obs, nobs, state->uuids, cap);
+		if (n < 0)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							errmsg("h9_vision_cone: invalid key, layer %d, "
+							       "or non-finite angles", layer)));
+		return n;
+	});
+}
+} /* extern "C" */

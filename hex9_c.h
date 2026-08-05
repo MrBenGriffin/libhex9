@@ -702,6 +702,103 @@ int64_t hex9_k_ring(const uint8_t uuid[16], int layer, int k,
 int64_t hex9_k_disk(const uint8_t uuid[16], int layer, int k,
                     uint8_t *out_uuids, int64_t max_cells);
 
+/* ── Grid verbs: aim / walk_to / vision_cone ───────────────────────────────
+ *
+ * Cell-first field primitives over the validated neighbour algebra — the C
+ * twins of the python wheel's hex9.verbs (ported from the hhg9
+ * fox-and-rabbits PoC). Every verb takes and returns layer-scoped BIN KEYS
+ * (from hex9_bin / hex9_grid); full-uuid re-derivation happens internally
+ * (the guaranteed path — bins are not addresses). Bearings and distances
+ * are advisory FP over cell centroids: they steer, they never mint — every
+ * returned key comes from the canonical encode/bin/neighbour chain, so the
+ * universality contract is untouched. Bearings are degrees clockwise from
+ * north (great-circle initial bearing); the seam changes nothing.
+ *
+ *   aim         : the neighbour whose centroid bearing best matches.
+ *   walk_to     : shortest hex path src → dest (A* over hex9_neighbors,
+ *                 obstacle keys impassable; dest passable even if listed).
+ *                 Writes the key list (first = src, last = dest); returns
+ *                 the count, 0 when no path within max_expand node
+ *                 expansions (max_expand <= 0 selects the default 5000),
+ *                 -1 on error / out buffer too small.
+ *   vision_cone : keys within k rings, within half_angle of bearing, and
+ *                 not occluded by an obstacle key (sight lines sampled at
+ *                 a third of the local hex pitch; an obstacle never
+ *                 occludes itself — you can see the hedge, just not
+ *                 through it). The source key is always included. Returns
+ *                 the count (keys UUID-sorted), or -1 on error.
+ */
+int  hex9_aim(const uint8_t key[16], int layer, double bearing,
+              uint8_t out_key[16]);
+int64_t hex9_walk_to(const uint8_t src_key[16], const uint8_t dest_key[16],
+                     int layer, const uint8_t *obstacles, size_t n_obstacles,
+                     int64_t max_expand, uint8_t *out_keys, int64_t max_cells);
+int64_t hex9_vision_cone(const uint8_t src_key[16], int layer,
+                         double bearing, double half_angle, int k,
+                         const uint8_t *obstacles, size_t n_obstacles,
+                         uint8_t *out_keys, int64_t max_cells);
+
+/* ── E4H: the aperture-4 structural tail (address extension) ───────────────
+ *
+ * An E4H address extends a hex9 HOST bin at attach layer L with an 0xE break
+ * marker, one HALF nibble (0/1: which state-cut trapezoid of the host
+ * hexagon), and up to (lmax-2-L) TAIL nibbles from {0, 1..5} descending the
+ * aperture-4 half-hex rep-4 carrier — exact nesting, straight edges, and
+ * suffix-local truncation (truncation = binning, unlike the a9 digits):
+ *
+ *     nibbles: [h9 body 0..L] [0xE] [half] [d1..dB] [0xF pad] [key_tail]
+ *     label  : <h9-label>E<half><d1..dB>            e.g. 0031586E1213
+ *
+ * E4H uuids are ADDRESSES (ruling 2026-08-04), under the same universality
+ * contract as the h9 chain: the classifier is EXACT — a frozen det-math FP
+ * seed, one snap at 2^-46, then pure integer arithmetic in Z[1/2, sqrt3]
+ * (core/h9_e4h.h; tables frozen from the hhg9 reference by
+ * tools/gen_e4h_tables.py) — so the same point mints the bit-identical E4H
+ * uuid on every platform at every depth. Digit semantics: 0 = centre child;
+ * 1..5 = the five-symbol enumeration (the digit of an edge child names the
+ * octahedral axis of the neighbour octant its class points at); matched
+ * pairs are global — the two halves of every fine hexagon share their final
+ * digit (hex9_e4h_partner walks the pair). Normative reference:
+ * hhg9/h9/e4h.py and docs/dggs-transport-tilings.md §4b-§4d; conformance
+ * corpus test_data/e4h_pin.tsv.
+ *
+ * 0xE cannot occur in any h9 or curve uuid, so hex9_is_e4h is decisive; all
+ * OTHER uuid-consuming entry points in this header REJECT E4H input (the
+ * marker-guard doctrine — E4H tails have their own operations; the h9
+ * machinery must not silently mis-read them).
+ *
+ * encode: layer 0..lmax-2, depth 0..lmax-2-layer (the nibble budget).
+ * decode/partner: representative lon/lat (leaf trapezoid centroid / the
+ * mirror half across the leaf's long side). bin: TAIL truncation to
+ * `depth` digits (suffix-local, exact). split: host bin + half + digits.
+ * Errors: 0 ok; 1 bad args; 2 grammar (not E4H / invalid nibbles); 3 point
+ * two seams from host (unreachable for canonically binned points — census
+ * hhg9 experimental/e4h/e4h_symbolic.py). Batch forms OR the item results.
+ */
+int  hex9_e4h_encode(double lon, double lat, int layer, int depth,
+                     uint8_t out_uuid[16]);
+int  hex9_e4h_encode_sphere(double lon, double lat, int layer, int depth,
+                            uint8_t out_uuid[16]);
+int  hex9_e4h_encode_many(const double *lon, const double *lat, size_t n,
+                          int layer, int depth, uint8_t *out_uuid);
+int  hex9_e4h_encode_many_sphere(const double *lon, const double *lat, size_t n,
+                                 int layer, int depth, uint8_t *out_uuid);
+int  hex9_e4h_decode(const uint8_t uuid[16], double *lon, double *lat);
+int  hex9_e4h_decode_sphere(const uint8_t uuid[16], double *lon, double *lat);
+int  hex9_e4h_decode_many(const uint8_t *uuid, size_t n,
+                          double *lon, double *lat);
+int  hex9_e4h_decode_many_sphere(const uint8_t *uuid, size_t n,
+                                 double *lon, double *lat);
+int  hex9_e4h_partner(const uint8_t uuid[16], double *lon, double *lat);
+int  hex9_e4h_partner_sphere(const uint8_t uuid[16], double *lon, double *lat);
+int  hex9_e4h_split(const uint8_t uuid[16], uint8_t out_host[16],
+                    int *half, uint8_t digits[28], int *ndigits);
+int  hex9_e4h_bin(const uint8_t uuid[16], int depth, uint8_t out_uuid[16]);
+int  hex9_e4h_depth(const uint8_t uuid[16]);   /* tail digit count, -1 if not E4H */
+int  hex9_is_e4h(const uint8_t uuid[16]);      /* 1 iff any nibble == 0xE */
+int  hex9_e4h_label(const uint8_t uuid[16], char *buf, size_t buflen);
+int  hex9_e4h_parse_label(const char *label, uint8_t out_uuid[16]);
+
 /* ── Diagnostics (optional; mirrors h9_diag) ───────────────────────────────
  * Writes the BRAW (pre-warp) and BARY (post-warp) descent coordinates for a
  * point into buf. Internal aid, not part of the stable surface.

@@ -9,6 +9,7 @@
 #define H9_WARP_ENABLE 1
 #include "h9_math.h"
 #include "h9_addressing.h"
+#include "h9_e4h.h"
 #include "h9_uv_lattice.h"
 #include "h9_grid.h"
 #include "h9_kring.h"
@@ -170,6 +171,7 @@ extern "C" int hex9_encode(double lon, double lat, uint8_t out_uuid[16]) {
 }
 
 extern "C" int hex9_decode(const uint8_t uuid[16], double *lon, double *lat) {
+    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_decode */
     decode_one(uuid, lon, lat);
     return 0;
 }
@@ -184,6 +186,7 @@ extern "C" int hex9_encode_sphere(double lon, double lat, uint8_t out_uuid[16]) 
 }
 
 extern "C" int hex9_decode_sphere(const uint8_t uuid[16], double *lon, double *lat) {
+    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_decode */
     decode_one(uuid, lon, lat, &h9_g_sphere);
     return 0;
 }
@@ -230,6 +233,7 @@ static void canonical_bin(const uint8_t uuid[16], int layer, uint8_t out[16]) {
 
 extern "C" int hex9_bin(const uint8_t uuid[16], int layer, uint8_t out_uuid[16]) {
     if (layer < 0 || layer > H9_LMAX) return 1;
+    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_bin */
     canonical_bin(uuid, layer, out_uuid);
     return 0;
 }
@@ -247,6 +251,8 @@ extern "C" int hex9_encode_many(const double *lon, const double *lat, size_t n,
 
 extern "C" int hex9_decode_many(const uint8_t *uuid, size_t n,
                                 double *lon, double *lat) {
+    for (size_t i = 0; i < n; ++i)
+        if (h9e4h_is_marked(uuid + i * 16)) return 1;
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static)
     for (ptrdiff_t i = 0; i < N; ++i)
@@ -265,6 +271,8 @@ extern "C" int hex9_encode_many_sphere(const double *lon, const double *lat,
 
 extern "C" int hex9_decode_many_sphere(const uint8_t *uuid, size_t n,
                                        double *lon, double *lat) {
+    for (size_t i = 0; i < n; ++i)
+        if (h9e4h_is_marked(uuid + i * 16)) return 1;
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static)
     for (ptrdiff_t i = 0; i < N; ++i)
@@ -275,6 +283,8 @@ extern "C" int hex9_decode_many_sphere(const uint8_t *uuid, size_t n,
 extern "C" int hex9_bin_many(const uint8_t *uuid, int layer, size_t n,
                              uint8_t *out_uuid) {
     if (layer < 0 || layer > H9_LMAX) return 1;
+    for (size_t i = 0; i < n; ++i)
+        if (h9e4h_is_marked(uuid + i * 16)) return 1;
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static)
     for (ptrdiff_t i = 0; i < N; ++i)
@@ -286,6 +296,7 @@ extern "C" int hex9_bin_many(const uint8_t *uuid, int layer, size_t n,
  * Thin surface over h9kring::h9_cell_parent_uuid / h9_cell_ancestor_uuid —
  * see the doctrine comment there. */
 extern "C" int hex9_cell_parent(const uint8_t uuid[16], uint8_t out_uuid[16]) {
+    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_bin/split */
     return h9kring::h9_cell_parent_uuid(uuid, out_uuid) ? 0 : 1;
 }
 
@@ -295,13 +306,15 @@ extern "C" int hex9_cell_parent_many(const uint8_t *uuid, size_t n,
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static) reduction(|:rc)
     for (ptrdiff_t i = 0; i < N; ++i)
-        rc |= h9kring::h9_cell_parent_uuid(uuid + (size_t)i * 16,
-                                          out_uuid + (size_t)i * 16) ? 0 : 1;
+        rc |= h9e4h_is_marked(uuid + (size_t)i * 16) ? 1
+            : (h9kring::h9_cell_parent_uuid(uuid + (size_t)i * 16,
+                                            out_uuid + (size_t)i * 16) ? 0 : 1);
     return rc;
 }
 
 extern "C" int hex9_cell_ancestor(const uint8_t uuid[16], int layer,
                                   uint8_t out_uuid[16]) {
+    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_bin/split */
     return h9kring::h9_cell_ancestor_uuid(uuid, layer, out_uuid) ? 0 : 1;
 }
 
@@ -312,8 +325,9 @@ extern "C" int hex9_cell_ancestor_many(const uint8_t *uuid, int layer, size_t n,
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static) reduction(|:rc)
     for (ptrdiff_t i = 0; i < N; ++i)
-        rc |= h9kring::h9_cell_ancestor_uuid(uuid + (size_t)i * 16, layer,
-                                            out_uuid + (size_t)i * 16) ? 0 : 1;
+        rc |= h9e4h_is_marked(uuid + (size_t)i * 16) ? 1
+            : (h9kring::h9_cell_ancestor_uuid(uuid + (size_t)i * 16, layer,
+                                              out_uuid + (size_t)i * 16) ? 0 : 1);
     return rc;
 }
 
@@ -327,6 +341,7 @@ extern "C" int hex9_cell_ancestor_many(const uint8_t *uuid, int layer, size_t n,
 
 /* Shared kernel: uuid (h9 or curve) -> curve rows + layer. */
 static int curve_rows_of(const uint8_t uuid[16], uint8_t *rows) {
+    if (h9e4h_is_marked(uuid)) return -1;   /* E4H: no curve on tails */
     if (h9curve::is_curve_uuid(uuid))
         return h9curve::curve_unpack(uuid, rows);
     bool rebin = false;
@@ -359,6 +374,7 @@ extern "C" int hex9_curve_many(const uint8_t *uuid, size_t n, uint8_t *out_curve
 }
 
 extern "C" int hex9_curve_decode(const uint8_t curve[16], uint8_t out_uuid[16]) {
+    if (h9e4h_is_marked(curve)) return 1;   /* E4H is neither curve nor h9 */
     if (!h9curve::is_curve_uuid(curve)) {           /* h9-uuid passes through */
         if (h9curve::curve_input_layer(curve, nullptr) < 0) return 1;
         std::memcpy(out_uuid, curve, 16);
@@ -454,6 +470,7 @@ extern "C" int64_t hex9_curve_ncells(int from_layer, int to_layer) {
  * full uuid re-binned canonically, curve-uuid decoded. Returns the cell's
  * own layer, or -1. */
 static int curve_cell_input(const uint8_t uuid[16], uint8_t anc[16]) {
+    if (h9e4h_is_marked(uuid)) return -1;   /* E4H: no lineage on tails */
     if (h9curve::is_curve_uuid(uuid)) {
         if (!h9curve::curve_decode_to_bin(uuid, anc)) return -1;
     } else {
@@ -691,6 +708,7 @@ extern "C" int hex9_encode_boct_many(const double *cx, const double *cy,
 extern "C" int hex9_decode_boct(const uint8_t uuid[16],
                                 double *cx, double *cy, int *oid) {
     if (!uuid || !cx || !cy || !oid) return 1;
+    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: hex9_e4h_decode */
     uint8_t nib[32];
     h9a_unpack(uuid, nib);
 #if H9_HAS_HTERM
@@ -726,6 +744,7 @@ extern "C" int hex9_cell_ring_boct(const uint8_t uuid[16], int layer,
                                    double *out_cx, double *out_cy,
                                    int *out_oid, int max_points) {
     if (!out_cx || !out_cy || !out_oid) return -1;
+    if (h9e4h_is_marked(uuid)) return -1;   /* E4H input: no h9 cell ring */
     if (layer < 0 || layer > H9_LMAX) return -1;
     if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
     const int n_ring = hex9_ring_npoints(densify);
@@ -753,6 +772,7 @@ static int write_label(const uint8_t nibbles[32], int layer, char *buf) {
  * decoded to its canonical bin first so label(full) == label(h9_bin(full)). */
 extern "C" int hex9_label(const uint8_t uuid[16], int layer, char *buf, size_t buflen) {
     if (layer < 0 || layer > H9_LMAX || !buf) return -1;
+    if (h9e4h_is_marked(uuid)) return -1;   /* E4H input: hex9_e4h_label */
     uint8_t cb[16], nibbles[32];
     canonical_bin(uuid, layer, cb);
     h9a_unpack(cb, nibbles);
@@ -764,6 +784,7 @@ extern "C" int hex9_label(const uint8_t uuid[16], int layer, char *buf, size_t b
 
 extern "C" int hex9_label_key(const uint8_t uuid[16], int layer, char *buf, size_t buflen) {
     if (layer < 0 || layer > H9_LMAX || !buf) return -1;
+    if (h9e4h_is_marked(uuid)) return -1;   /* E4H input: hex9_e4h_label */
     /* Canonical bin: it is a bin (nibble[30]==0xF), so nibble[31] already holds
      * the layer's key tail (c2<<1 | oct_mode) — no backward walk, and no c_mo
      * display bit (the canonical mode-0 home is unambiguous, so GIS exports no
@@ -876,6 +897,8 @@ extern "C" int hex9_label_centroid(const char *label, double *lon, double *lat) 
 extern "C" int hex9_common_ancestor(const uint8_t *uuids, size_t n, int layer,
                                     char *buf, size_t buflen, uint8_t *out_uuid) {
     if (!uuids || n == 0 || layer < 0 || layer > H9_LMAX || !buf) return -1;
+    for (size_t i = 0; i < n; ++i)
+        if (h9e4h_is_marked(uuids + i * 16)) return -1;
     uint8_t first[16], fnib[32];
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuids, layer, &id)) return -1;
@@ -965,6 +988,7 @@ extern "C" int hex9_cell_uv(const uint8_t uuid[16], int layer,
                             int64_t v_ia[6], int64_t v_ib[6], int v_oid[6],
                             int *ext) {
     if (layer < 0 || layer > H9_LMAX) return 1;
+    if (h9e4h_is_marked(uuid)) return 1;    /* E4H input: no h9 lattice id */
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuid, layer, &id)) return 1;
     /* centre key stays in the cell's GOVERNING frame (mode-0 side for seam
@@ -987,6 +1011,8 @@ extern "C" int hex9_cell_uv_many(const uint8_t *uuid, const int32_t *layer,
                                  int64_t *v_ia, int64_t *v_ib, int32_t *v_oid,
                                  int32_t *ext) {
     int rc = 0;
+    for (size_t i = 0; i < n; ++i)
+        if (h9e4h_is_marked(uuid + i * 16)) return 1;
     const ptrdiff_t N = (ptrdiff_t)n;
     #pragma omp parallel for schedule(static) reduction(|:rc)
     for (ptrdiff_t i = 0; i < N; ++i) {
@@ -1011,6 +1037,7 @@ extern "C" void hex9_uv_units(double *u1, double *v3) {
 static int cell_ring_impl(const uint8_t uuid[16], int layer, int densify,
                           double *out_lonlat, int max_points,
                           const H9Authalic *aux) {
+    if (h9e4h_is_marked(uuid)) return -1;   /* E4H input: no h9 cell ring */
     if (layer < 0 || layer > H9_LMAX) return -1;
     if (densify < 0 || densify > 9 || layer + densify > H9_LMAX) return -1;
     const int n_ring = hex9_ring_npoints(densify);
@@ -1157,6 +1184,9 @@ extern "C" hex9_adaptive *hex9_adaptive_create(const uint8_t *uuids,
         return nullptr;
     };
     if (!uuids) return fail("uuids must not be NULL");
+    for (size_t i = 0; i < n; ++i)
+        if (h9e4h_is_marked(uuids + i * 16))
+            return fail("E4H uuid input — the digest takes h9 full uuids");
     if (min_layer < 0 || max_layer > H9_LMAX || min_layer > max_layer) {
         char msg[80];
         std::snprintf(msg, sizeof msg,
@@ -1291,6 +1321,7 @@ extern "C" void hex9_adaptive_destroy(hex9_adaptive *a) { delete a; }
 
 extern "C" int hex9_neighbors(const uint8_t uuid[16], int layer, uint8_t *out_uuids) {
     if (!out_uuids || layer < 0 || layer > H9_LMAX) return -1;
+    if (h9e4h_is_marked(uuid)) return -1;   /* E4H input: h9 adjacency only */
     if ((uuid[15] >> 4) == 0x0Fu) return -1;   /* bin input: keys, not addresses */
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuid, layer, &id)) return -1;
@@ -1318,6 +1349,7 @@ extern "C" int64_t hex9_disk_ncells(int k) {
 static int64_t kring_common(const uint8_t uuid[16], int layer, int k,
                             uint8_t *out_uuids, int64_t max_cells, bool ring_only) {
     if (k < 0 || !out_uuids || max_cells <= 0 || layer < 0 || layer > H9_LMAX) return -1;
+    if (h9e4h_is_marked(uuid)) return -1;   /* E4H input: h9 adjacency only */
     if ((uuid[15] >> 4) == 0x0Fu) return -1;   /* bin input: keys, not addresses */
     h9kring::H9CellId id;
     if (!h9kring::identity_from_uuid(uuid, layer, &id)) return -1;
@@ -1368,4 +1400,535 @@ extern "C" int hex9_diag(double lon, double lat, char *buf, size_t buflen) {
         "BRAW=(%.17g, %.17g) descent=(%.17g, %.17g) oid=%d mode=%d",
         cx, cy, bx, by, oid, oct_mode);
     return (n < 0 || (size_t)n >= buflen) ? -1 : n;
+}
+
+/* ── E4H: aperture-4 structural tail ────────────────────────────────────────
+ * ABI over core/h9_e4h.h (the exact classifier; tables frozen from the hhg9
+ * reference by tools/gen_e4h_tables.py). See hex9_c.h for the model and
+ * docs/universality.md for the contract: the seed FP program + the 2^-46
+ * snap + the integer descent ARE the E4H address definition. */
+
+/* host-bin context: key_tail state + the LATTICE HEX CENTRE in the host's
+ * governing chart. The centre convention matters: hhg9's h9_dec (the frame
+ * the reference builds on) uses the whole-hexagon lattice centre — for a
+ * seam-straddling (ext) host that point lies ON the octant seam, NOT at the
+ * mode-0 half's representative centroid that hex9_decode_boct emits (the F2
+ * distinction hex9_cell_uv documents). Using the representative here shifted
+ * every ext-host frame by half a cell and broke corpus parity on all of
+ * them; the lattice centre agrees with the reference to <= 1 ulp
+ * (cell-relative <= 7e-12 — far under the corpus margin filter). */
+static int e4h_host_info(const uint8_t host[16], int layer,
+                         int *hoid, int *c2, int *p_mo,
+                         double *hcx, double *hcy) {
+    uint8_t nib[32];
+    h9a_unpack(host, nib);
+    const uint8_t kt = nib[H9_NIB_TAIL];
+    *c2   = (kt >> 1) & 3;
+    *p_mo = (kt >> 3) & 1;
+    if (*c2 > 2) return E4H_EBAD;
+    int64_t c_ia, c_ib, v_ia[6], v_ib[6];
+    int c_oid, v_oid[6], ext;
+    if (hex9_cell_uv(host, layer, &c_ia, &c_ib, &c_oid,
+                     v_ia, v_ib, v_oid, &ext)) return E4H_EBAD;
+    double u1, v3, p3 = 1.0;
+    hex9_uv_units(&u1, &v3);
+    for (int i = 0; i < layer; ++i) p3 *= 3.0;
+    *hcx = (double)c_ia * u1 / p3;
+    *hcy = (double)c_ib * v3 / p3;
+    *hoid = c_oid;
+    return 0;
+}
+
+static int e4h_encode_one(double lon, double lat, int layer, int depth,
+                          int sphere, uint8_t out[16]) {
+    if (!out || layer < 0 || depth < 0 ||
+        layer + 2 + depth > H9_NIB_BODYTOP) return E4H_EBAD;
+    double px, py;
+    int g;
+    int rc = sphere ? hex9_project_sphere(lon, lat, &px, &py, &g)
+                    : hex9_project(lon, lat, &px, &py, &g);
+    if (rc) return E4H_EBAD;
+    uint8_t full[16], host[16];
+    rc = sphere ? hex9_encode_sphere(lon, lat, full)
+                : hex9_encode(lon, lat, full);
+    if (rc) return E4H_EBAD;
+    if (hex9_bin(full, layer, host)) return E4H_EBAD;
+    int hoid, c2, p_mo;
+    double hcx, hcy;
+    if (e4h_host_info(host, layer, &hoid, &c2, &p_mo, &hcx, &hcy))
+        return E4H_EBAD;
+    rc = h9e4h_unfold_point(&px, &py, g, hoid);
+    if (rc) return rc;
+    double wx, wy;
+    h9e4h_to_frame(px, py, hcx, hcy, p_mo, c2, layer, &wx, &wy);
+    int half;
+    uint8_t digits[28];
+    rc = h9e4h_descend(wx, wy, hoid, c2, depth, &half, digits);
+    if (rc) return rc;
+    uint8_t nib[32];
+    h9a_unpack(host, nib);
+    nib[layer + 1] = E4H_MARK;
+    nib[layer + 2] = (uint8_t)half;
+    for (int i = 0; i < depth; ++i) nib[layer + 3 + i] = digits[i];
+    h9a_pack(nib, out);
+    return 0;
+}
+
+static int e4h_decode_one(const uint8_t u[16], int sphere, int partner,
+                          double *lon, double *lat) {
+    if (!u || !lon || !lat) return E4H_EBAD;
+    uint8_t nib[32], hostnib[32], digits[28], host[16];
+    h9a_unpack(u, nib);
+    int layer, half, nd;
+    int rc = h9e4h_split_nibs(nib, hostnib, &layer, &half, digits, &nd);
+    if (rc) return rc;
+    h9a_pack(hostnib, host);
+    int hoid, c2, p_mo;
+    double hcx, hcy;
+    if (e4h_host_info(host, layer, &hoid, &c2, &p_mo, &hcx, &hcy))
+        return E4H_EBAD;
+    /* partner probe: the mirror across the trapezoid's long side */
+    const double pr = partner ? -E4H_CEN_RE : E4H_CEN_RE;
+    double rr, ri;
+    rc = h9e4h_compose(half, digits, nd, hoid, c2, pr, E4H_CEN_IM, &rr, &ri);
+    if (rc) return rc;
+    double zx, zy;
+    h9e4h_from_frame(rr, ri, hcx, hcy, p_mo, c2, layer, &zx, &zy);
+    int oid = hoid;
+    h9e4h_fold(&zx, &zy, &oid);
+    rc = sphere ? hex9_unproject_sphere(zx, zy, oid, lon, lat)
+                : hex9_unproject(zx, zy, oid, lon, lat);
+    return rc ? E4H_EBAD : 0;
+}
+
+extern "C" int hex9_e4h_encode(double lon, double lat, int layer, int depth,
+                               uint8_t out_uuid[16]) {
+    return e4h_encode_one(lon, lat, layer, depth, 0, out_uuid);
+}
+extern "C" int hex9_e4h_encode_sphere(double lon, double lat, int layer,
+                                      int depth, uint8_t out_uuid[16]) {
+    return e4h_encode_one(lon, lat, layer, depth, 1, out_uuid);
+}
+extern "C" int hex9_e4h_encode_many(const double *lon, const double *lat,
+                                    size_t n, int layer, int depth,
+                                    uint8_t *out_uuid) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= e4h_encode_one(lon[i], lat[i], layer, depth, 0,
+                             out_uuid + (size_t)i * 16);
+    return rc;
+}
+extern "C" int hex9_e4h_encode_many_sphere(const double *lon, const double *lat,
+                                           size_t n, int layer, int depth,
+                                           uint8_t *out_uuid) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= e4h_encode_one(lon[i], lat[i], layer, depth, 1,
+                             out_uuid + (size_t)i * 16);
+    return rc;
+}
+extern "C" int hex9_e4h_decode(const uint8_t uuid[16],
+                               double *lon, double *lat) {
+    return e4h_decode_one(uuid, 0, 0, lon, lat);
+}
+extern "C" int hex9_e4h_decode_sphere(const uint8_t uuid[16],
+                                      double *lon, double *lat) {
+    return e4h_decode_one(uuid, 1, 0, lon, lat);
+}
+extern "C" int hex9_e4h_decode_many(const uint8_t *uuid, size_t n,
+                                    double *lon, double *lat) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= e4h_decode_one(uuid + (size_t)i * 16, 0, 0, &lon[i], &lat[i]);
+    return rc;
+}
+extern "C" int hex9_e4h_decode_many_sphere(const uint8_t *uuid, size_t n,
+                                           double *lon, double *lat) {
+    int rc = 0;
+    const ptrdiff_t N = (ptrdiff_t)n;
+    #pragma omp parallel for schedule(static) reduction(|:rc)
+    for (ptrdiff_t i = 0; i < N; ++i)
+        rc |= e4h_decode_one(uuid + (size_t)i * 16, 1, 0, &lon[i], &lat[i]);
+    return rc;
+}
+extern "C" int hex9_e4h_partner(const uint8_t uuid[16],
+                                double *lon, double *lat) {
+    return e4h_decode_one(uuid, 0, 1, lon, lat);
+}
+extern "C" int hex9_e4h_partner_sphere(const uint8_t uuid[16],
+                                       double *lon, double *lat) {
+    return e4h_decode_one(uuid, 1, 1, lon, lat);
+}
+
+extern "C" int hex9_e4h_split(const uint8_t uuid[16], uint8_t out_host[16],
+                              int *half, uint8_t digits[28], int *ndigits) {
+    if (!uuid || !out_host || !half || !digits || !ndigits) return E4H_EBAD;
+    uint8_t nib[32], hostnib[32];
+    int layer;
+    h9a_unpack(uuid, nib);
+    const int rc = h9e4h_split_nibs(nib, hostnib, &layer, half, digits,
+                                    ndigits);
+    if (rc) return rc;
+    h9a_pack(hostnib, out_host);
+    return 0;
+}
+
+extern "C" int hex9_e4h_bin(const uint8_t uuid[16], int depth,
+                            uint8_t out_uuid[16]) {
+    if (!uuid || !out_uuid || depth < 0) return E4H_EBAD;
+    uint8_t nib[32], hostnib[32], digits[28];
+    int layer, half, nd;
+    h9a_unpack(uuid, nib);
+    const int rc = h9e4h_split_nibs(nib, hostnib, &layer, &half, digits, &nd);
+    if (rc) return rc;
+    if (depth > nd) return E4H_EBAD;      /* deepening is unreachable */
+    for (int i = layer + 3 + depth; i <= H9_NIB_TAIL - 1; ++i) nib[i] = 0x0Fu;
+    h9a_pack(nib, out_uuid);
+    return 0;
+}
+
+extern "C" int hex9_e4h_depth(const uint8_t uuid[16]) {
+    if (!uuid) return -1;
+    uint8_t nib[32], hostnib[32], digits[28];
+    int layer, half, nd;
+    h9a_unpack(uuid, nib);
+    if (h9e4h_split_nibs(nib, hostnib, &layer, &half, digits, &nd)) return -1;
+    return nd;
+}
+
+extern "C" int hex9_is_e4h(const uint8_t uuid[16]) {
+    return uuid ? h9e4h_is_marked(uuid) : 0;
+}
+
+extern "C" int hex9_e4h_label(const uint8_t uuid[16], char *buf,
+                              size_t buflen) {
+    if (!uuid || !buf) return -1;
+    uint8_t nib[32], hostnib[32], digits[28];
+    int layer, half, nd;
+    h9a_unpack(uuid, nib);
+    if (h9e4h_split_nibs(nib, hostnib, &layer, &half, digits, &nd)) return -1;
+    const int len = (layer + 1) + 2 + nd;      /* body + 'E' + half + digits */
+    if ((size_t)len + 1 > buflen) return -1;
+    write_label(hostnib, layer, buf);
+    buf[layer + 1] = 'E';
+    buf[layer + 2] = (char)('0' + half);
+    for (int i = 0; i < nd; ++i) buf[layer + 3 + i] = (char)('0' + digits[i]);
+    buf[len] = '\0';
+    return len;
+}
+
+extern "C" int hex9_e4h_parse_label(const char *label, uint8_t out_uuid[16]) {
+    if (!label || !out_uuid) return E4H_EBAD;
+    const char *e = std::strchr(label, 'E');
+    if (!e || e == label) return E4H_EGRAM;
+    const size_t blen = (size_t)(e - label);
+    if (blen > (size_t)H9_NIB_BODYTOP + 1) return E4H_EGRAM;
+    char body[40];
+    std::memcpy(body, label, blen);
+    body[blen] = '\0';
+    uint8_t host[16];
+    const int layer = hex9_parse_label(body, host);
+    if (layer < 0 || (size_t)layer + 1 != blen) return E4H_EGRAM;
+    const char *p = e + 1;
+    if (*p != '0' && *p != '1') return E4H_EGRAM;
+    const int half = *p - '0';
+    ++p;
+    uint8_t digits[28];
+    int nd = 0;
+    for (; *p; ++p) {
+        if (*p < '0' || *p > '5' || nd >= 28) return E4H_EGRAM;
+        digits[nd++] = (uint8_t)(*p - '0');
+    }
+    if (layer + 2 + nd > H9_NIB_BODYTOP) return E4H_EGRAM;
+    uint8_t nib[32];
+    h9a_unpack(host, nib);
+    if (nib[layer] == 0x0Fu || nib[layer + 1] != 0x0Fu) return E4H_EGRAM;
+    nib[layer + 1] = E4H_MARK;
+    nib[layer + 2] = (uint8_t)half;
+    for (int i = 0; i < nd; ++i) nib[layer + 3 + i] = digits[i];
+    h9a_pack(nib, out_uuid);
+    return 0;
+}
+
+/* ── Grid verbs: aim / walk_to / vision_cone ────────────────────────────────
+ * C twins of the python wheel's hex9.verbs (hhg9 fox-and-rabbits PoC).
+ * Cell-first: bin KEYS in and out; full-uuid re-derivation internal (the
+ * guaranteed path). Bearings/distances are advisory FP over centroids —
+ * they steer, they never mint. The behavioural reference is the python
+ * module; the primitives (decode/encode/bin/neighbors/k_disk) are the very
+ * same C functions the wheel calls, so the twins differ only in scalar
+ * bearing arithmetic. */
+
+#include <array>
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
+#include <algorithm>
+
+namespace {
+
+constexpr double H9V_DEG = 3.14159265358979323846 / 180.0;
+
+double h9v_wrap180(double a) {
+    a = std::fmod(a + 180.0, 360.0);
+    if (a < 0) a += 360.0;
+    return a - 180.0;
+}
+
+/* initial great-circle bearing, degrees clockwise from north */
+double h9v_bearing(double lon1, double lat1, double lon2, double lat2) {
+    const double p1 = lat1 * H9V_DEG, p2 = lat2 * H9V_DEG;
+    const double dl = (lon2 - lon1) * H9V_DEG;
+    const double y = std::sin(dl) * std::cos(p2);
+    const double x = std::cos(p1) * std::sin(p2)
+                   - std::sin(p1) * std::cos(p2) * std::cos(dl);
+    double b = std::atan2(y, x) / H9V_DEG;
+    b = std::fmod(b, 360.0);
+    if (b < 0) b += 360.0;
+    return b;
+}
+
+/* central angle, degrees */
+double h9v_angle(double lon1, double lat1, double lon2, double lat2) {
+    const double p1 = lat1 * H9V_DEG, p2 = lat2 * H9V_DEG;
+    const double dl = (lon2 - lon1) * H9V_DEG;
+    double h = std::sin((p2 - p1) / 2) * std::sin((p2 - p1) / 2)
+             + std::cos(p1) * std::cos(p2)
+               * std::sin(dl / 2) * std::sin(dl / 2);
+    if (h < 0) h = 0;
+    if (h > 1) h = 1;
+    return 2.0 * std::asin(std::sqrt(h)) / H9V_DEG;
+}
+
+using H9Key = std::array<uint8_t, 16>;
+struct H9KeyHash {
+    size_t operator()(const H9Key &k) const {
+        uint64_t a, b;
+        std::memcpy(&a, k.data(), 8);
+        std::memcpy(&b, k.data() + 8, 8);
+        return (size_t)(a * 0x9e3779b97f4a7c15ull ^ b);
+    }
+};
+
+H9Key h9v_key(const uint8_t *p) { H9Key k; std::memcpy(k.data(), p, 16); return k; }
+
+/* bin key -> centroid (representative point) */
+int h9v_centroid(const uint8_t key[16], double *lon, double *lat) {
+    return hex9_decode(key, lon, lat);
+}
+
+/* bin key -> full uuid (guaranteed re-derivation: bins are not addresses) */
+int h9v_full(const uint8_t key[16], uint8_t full[16]) {
+    double lon, lat;
+    if (hex9_decode(key, &lon, &lat)) return 1;
+    return hex9_encode(lon, lat, full);
+}
+
+/* neighbours of a key: decode->encode->neighbors; returns count or -1 */
+int h9v_neighbors(const uint8_t key[16], int layer, uint8_t out[6 * 16]) {
+    uint8_t full[16];
+    if (h9v_full(key, full)) return -1;
+    return hex9_neighbors(full, layer, out);
+}
+
+/* median centroid step to the neighbours — the local hex pitch (numpy
+ * median convention: mean of the two middle values when count is even) */
+double h9v_pitch(const uint8_t key[16], int layer) {
+    uint8_t nbs[6 * 16];
+    const int n = h9v_neighbors(key, layer, nbs);
+    if (n <= 0) return -1.0;
+    double lon0, lat0, d[6];
+    if (h9v_centroid(key, &lon0, &lat0)) return -1.0;
+    for (int i = 0; i < n; ++i) {
+        double lon1, lat1;
+        if (h9v_centroid(nbs + (size_t)i * 16, &lon1, &lat1)) return -1.0;
+        d[i] = h9v_angle(lon0, lat0, lon1, lat1);
+    }
+    std::sort(d, d + n);
+    return (n & 1) ? d[n / 2] : 0.5 * (d[n / 2 - 1] + d[n / 2]);
+}
+
+}  /* namespace */
+
+extern "C" int hex9_aim(const uint8_t key[16], int layer, double bearing,
+                        uint8_t out_key[16]) {
+    if (!key || !out_key || layer < 0 || layer > H9_LMAX ||
+        !std::isfinite(bearing)) return 1;
+    if (h9e4h_is_marked(key)) return 1;
+    uint8_t nbs[6 * 16];
+    const int n = h9v_neighbors(key, layer, nbs);
+    if (n <= 0) return 1;
+    double lon0, lat0;
+    if (h9v_centroid(key, &lon0, &lat0)) return 1;
+    int best = -1;
+    double bd = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double lon1, lat1;
+        if (h9v_centroid(nbs + (size_t)i * 16, &lon1, &lat1)) return 1;
+        const double diff = std::fabs(h9v_wrap180(
+            h9v_bearing(lon0, lat0, lon1, lat1) - bearing));
+        if (best < 0 || diff < bd) { bd = diff; best = i; }
+    }
+    std::memcpy(out_key, nbs + (size_t)best * 16, 16);
+    return 0;
+}
+
+extern "C" int64_t hex9_walk_to(const uint8_t src_key[16],
+                                const uint8_t dest_key[16], int layer,
+                                const uint8_t *obstacles, size_t n_obstacles,
+                                int64_t max_expand,
+                                uint8_t *out_keys, int64_t max_cells) {
+    if (!src_key || !dest_key || !out_keys || max_cells <= 0 ||
+        layer < 0 || layer > H9_LMAX) return -1;
+    if (h9e4h_is_marked(src_key) || h9e4h_is_marked(dest_key)) return -1;
+    if (max_expand <= 0) max_expand = 5000;
+
+    std::unordered_set<H9Key, H9KeyHash> block;
+    for (size_t i = 0; i < n_obstacles; ++i)
+        block.insert(h9v_key(obstacles + i * 16));
+
+    double dlon, dlat, pitch;
+    if (h9v_centroid(dest_key, &dlon, &dlat)) return -1;
+    pitch = h9v_pitch(src_key, layer);
+    if (pitch <= 0) return -1;
+    const H9Key src = h9v_key(src_key), dst = h9v_key(dest_key);
+
+    /* the python module's heap order exactly: (f, then g, then key bytes) */
+    struct Node { double f; int64_t g; H9Key key; };
+    struct NodeGt {
+        bool operator()(const Node &a, const Node &b) const {
+            if (a.f != b.f) return a.f > b.f;
+            if (a.g != b.g) return a.g > b.g;
+            return std::memcmp(a.key.data(), b.key.data(), 16) > 0;
+        }
+    };
+    auto h = [&](const H9Key &k) -> double {
+        double lon, lat;
+        if (h9v_centroid(k.data(), &lon, &lat)) return 1e300;
+        return h9v_angle(lon, lat, dlon, dlat) / pitch * 0.95;
+    };
+
+    std::priority_queue<Node, std::vector<Node>, NodeGt> open;
+    std::unordered_map<H9Key, H9Key, H9KeyHash> came;
+    std::unordered_map<H9Key, int64_t, H9KeyHash> g;
+    open.push({h(src), 0, src});
+    came.emplace(src, src);
+    g.emplace(src, 0);
+
+    for (int64_t it = 0; it < max_expand && !open.empty(); ++it) {
+        const Node cur = open.top();
+        open.pop();
+        if (cur.key == dst) {
+            std::vector<H9Key> path{cur.key};
+            while (!(path.back() == src))
+                path.push_back(came.at(path.back()));
+            if ((int64_t)path.size() > max_cells) return -1;
+            for (size_t i = 0; i < path.size(); ++i)
+                std::memcpy(out_keys + i * 16,
+                            path[path.size() - 1 - i].data(), 16);
+            return (int64_t)path.size();
+        }
+        if (cur.g > g.at(cur.key)) continue;
+        uint8_t nbs[6 * 16];
+        const int n = h9v_neighbors(cur.key.data(), layer, nbs);
+        if (n <= 0) continue;
+        for (int i = 0; i < n; ++i) {
+            const H9Key kk = h9v_key(nbs + (size_t)i * 16);
+            if (block.count(kk) && !(kk == dst)) continue;
+            auto it2 = g.find(kk);
+            if (it2 == g.end() || cur.g + 1 < it2->second) {
+                g[kk] = cur.g + 1;
+                came[kk] = cur.key;
+                open.push({(double)(cur.g + 1) + h(kk), cur.g + 1, kk});
+            }
+        }
+    }
+    return 0;    /* no path within max_expand */
+}
+
+extern "C" int64_t hex9_vision_cone(const uint8_t src_key[16], int layer,
+                                    double bearing, double half_angle, int k,
+                                    const uint8_t *obstacles,
+                                    size_t n_obstacles,
+                                    uint8_t *out_keys, int64_t max_cells) {
+    if (!src_key || !out_keys || max_cells <= 0 || k < 0 ||
+        layer < 0 || layer > H9_LMAX ||
+        !std::isfinite(bearing) || !std::isfinite(half_angle)) return -1;
+    if (h9e4h_is_marked(src_key)) return -1;
+
+    double slon, slat;
+    if (h9v_centroid(src_key, &slon, &slat)) return -1;
+    uint8_t full[16];
+    if (hex9_encode(slon, slat, full)) return -1;
+    const int64_t maxd = hex9_disk_ncells(k);
+    std::vector<uint8_t> disk((size_t)maxd * 16);
+    const int64_t nd = hex9_k_disk(full, layer, k, disk.data(), maxd);
+    if (nd < 0) return -1;
+    const H9Key src = h9v_key(src_key);
+
+    std::unordered_set<H9Key, H9KeyHash> block;
+    for (size_t i = 0; i < n_obstacles; ++i)
+        block.insert(h9v_key(obstacles + i * 16));
+
+    const double pitch = n_obstacles ? h9v_pitch(src_key, layer) : 1.0;
+    if (pitch <= 0) return -1;
+    const double ax = std::cos(slat * H9V_DEG) * std::cos(slon * H9V_DEG);
+    const double ay = std::cos(slat * H9V_DEG) * std::sin(slon * H9V_DEG);
+    const double az = std::sin(slat * H9V_DEG);
+
+    std::vector<H9Key> seen{src};
+    for (int64_t i = 0; i < nd; ++i) {
+        const uint8_t *cell = disk.data() + (size_t)i * 16;
+        const H9Key ck = h9v_key(cell);
+        if (ck == src) continue;
+        double clon, clat;
+        if (h9v_centroid(cell, &clon, &clat)) return -1;
+        const double br = h9v_bearing(slon, slat, clon, clat);
+        if (std::fabs(h9v_wrap180(br - bearing)) > half_angle) continue;
+        bool blocked = false;
+        if (n_obstacles) {
+            /* sight line sampled at a third of the hex pitch, each sample
+             * binned; an obstacle blocks unless it IS the source/target */
+            const double dist = h9v_angle(slon, slat, clon, clat);
+            const double bx = std::cos(clat * H9V_DEG) * std::cos(clon * H9V_DEG);
+            const double by = std::cos(clat * H9V_DEG) * std::sin(clon * H9V_DEG);
+            const double bz = std::sin(clat * H9V_DEG);
+            long ns = (long)std::ceil(dist / (pitch / 3.0));
+            if (ns < 2) ns = 2;
+            for (long j = 0; j < ns && !blocked; ++j) {
+                const double t = ((double)j + 0.5) / (double)ns;
+                double px = ax * (1 - t) + bx * t;
+                double py = ay * (1 - t) + by * t;
+                double pz = az * (1 - t) + bz * t;
+                const double nrm = std::sqrt(px * px + py * py + pz * pz);
+                px /= nrm; py /= nrm; pz /= nrm;
+                double c = pz;
+                if (c < -1) c = -1;
+                if (c > 1) c = 1;
+                const double plat = std::asin(c) / H9V_DEG;
+                const double plon = std::atan2(py, px) / H9V_DEG;
+                uint8_t sf[16], sb[16];
+                if (hex9_encode(plon, plat, sf) ||
+                    hex9_bin(sf, layer, sb)) return -1;
+                const H9Key sk = h9v_key(sb);
+                if (block.count(sk) && !(sk == src) && !(sk == ck))
+                    blocked = true;
+            }
+        }
+        if (!blocked) seen.push_back(ck);
+    }
+    if ((int64_t)seen.size() > max_cells) return -1;
+    std::sort(seen.begin(), seen.end(),
+              [](const H9Key &a, const H9Key &b) {
+                  return std::memcmp(a.data(), b.data(), 16) < 0;
+              });
+    for (size_t i = 0; i < seen.size(); ++i)
+        std::memcpy(out_keys + i * 16, seen[i].data(), 16);
+    return (int64_t)seen.size();
 }

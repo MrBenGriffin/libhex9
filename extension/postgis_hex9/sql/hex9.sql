@@ -484,3 +484,94 @@ SELECT (SELECT array_agg(h9_bin ORDER BY h9_bin) FROM a) =
        (SELECT bool_and(ST_SRID(geom) = 0) FROM s)         AS adaptive_sphere_srid0,
        (SELECT bool_and(abs(density - value * 12.0 * 9.0 ^ layer / (4.0 * pi()))
                         < 1e-12 * density) FROM s)         AS adaptive_density_per_sr;
+
+-- ═══ E4H: the aperture-4 structural tail (2.3.0) ════════════════════════════
+-- Pinned mint — universality: the same point mints these exact bytes on
+-- every platform (cf. libhex9 test_data/e4h_pin.tsv and wheel_pin.py).
+SELECT h9e_encode(ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326), 6, 4) AS e4h_uuid,
+       h9e_label(h9e_encode(ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326), 6, 4)) AS e4h_label;
+
+-- Structural laws: marker, depth, label round-trip, truncation-is-binning,
+-- host recovery, decode-lands-near.
+WITH e AS (
+    SELECT ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326) AS pt,
+           h9e_encode(ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326), 6, 4) AS u
+)
+SELECT h9_is_e4h(u)                                    AS is_e4h,
+       NOT h9_is_e4h(h9_encode(pt))                    AS h9_is_not_e4h,
+       h9e_depth(u) = 4                                AS depth_4,
+       h9e_parse_label(h9e_label(u)) = u               AS label_roundtrip,
+       h9e_bin(u, 2) = h9e_encode(pt, 6, 2)            AS truncation_is_binning,
+       h9e_host(u) = h9_bin(h9_encode(pt), 6)          AS host_is_the_l6_bin,
+       ST_Distance(h9e_decode(u)::geography,
+                   pt::geography) < 500.0              AS decode_lands_near
+FROM e;
+
+-- Matched pairs: the partner half shares the final digit and the
+-- partner-of-partner is the original address (involution).
+WITH e AS (SELECT h9e_encode(ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326),
+                             6, 4) AS u),
+     p AS (SELECT u, h9e_encode(h9e_partner(u), 6, 4) AS v FROM e)
+SELECT v <> u                                           AS partner_differs,
+       right(h9e_label(v), 1) = right(h9e_label(u), 1)  AS shared_final_digit,
+       h9e_encode(h9e_partner(v), 6, 4) = u             AS partner_involution
+FROM p;
+
+-- Sphere twin mints its own (different) E4H address for the same numerics.
+WITH s AS (
+    SELECT h9e_encode(ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326), 6, 4) AS w,
+           h9e_encode_sphere(ST_SetSRID(ST_MakePoint(-3.19, 55.95), 0), 6, 4) AS u
+)
+SELECT h9_is_e4h(u) AS sphere_mints_e4h, u <> w AS sphere_differs FROM s;
+
+-- The 0xE marker guard: h9 machinery must reject E4H input loudly.
+SELECT h9_bin(h9e_encode(ST_SetSRID(ST_MakePoint(-3.19, 55.95), 4326), 6, 2), 4);
+
+-- ═══ Grid verbs: h9_aim / h9_walk_to / h9_vision_cone (2.3.0) ═══════════════
+-- Cell-first (bin keys in and out); field straddles the equator octant seam.
+WITH f AS (
+    SELECT ST_SetSRID(ST_MakePoint(35.02, -0.02), 4326) AS pt,
+           h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(35.02, -0.02), 4326)), 8) AS fox
+)
+SELECT h9_aim(fox, 8, 15.0) <> fox                                 AS aim_moves,
+       (SELECT count(*) FROM h9_vision_cone(fox, 8, 15.0, 32.0, 3)) > 1
+                                                                   AS cone_nonempty,
+       (SELECT count(*) FROM h9_vision_cone(fox, 8, 0.0, 180.0, 3)) =
+       (SELECT count(*) FROM h9_kdisk(h9_encode(pt), 8, 3))        AS full_cone_is_disk,
+       fox IN (SELECT v FROM h9_vision_cone(fox, 8, 15.0, 32.0, 3) v)
+                                                                   AS src_always_visible,
+       (SELECT bool_or(clat.l > 0.0) AND bool_or(clat.l < 0.0)
+        FROM h9_vision_cone(fox, 8, 15.0, 32.0, 3) v,
+             LATERAL (SELECT ST_Y(h9_decode(v)) AS l) clat)        AS cone_crosses_seam,
+       h9_walk_to(fox, fox, 8) = ARRAY[fox]                        AS walk_to_self,
+       h9_walk_to(fox, h9_aim(fox, 8, 15.0), 8)
+           = ARRAY[fox, h9_aim(fox, 8, 15.0)]                      AS walk_one_step
+FROM f;
+
+-- Walk laws: endpoints, an obstacle forces a different path that avoids it;
+-- occlusion: the cell straight behind a blocker falls into shadow while the
+-- blocker's own face stays visible.
+WITH f AS (
+    SELECT h9_bin(h9_encode(ST_SetSRID(ST_MakePoint(35.02, -0.02), 4326)), 8) AS fox
+),
+c AS (
+    SELECT fox,
+           h9_aim(fox, 8, 15.0)                              AS a1,
+           h9_aim(h9_aim(fox, 8, 15.0), 8, 15.0)             AS a2,
+           h9_aim(h9_aim(h9_aim(fox, 8, 15.0), 8, 15.0), 8, 15.0) AS a3
+    FROM f
+),
+w0 AS (SELECT c.*, h9_walk_to(fox, a3, 8) AS path FROM c),
+w AS (SELECT w0.*, h9_walk_to(fox, a3, 8, ARRAY[path[2]]) AS detour FROM w0)
+SELECT array_length(path, 1) >= 3                        AS walk_len_ge_3,
+       path[1] = fox AND path[array_length(path, 1)] = a3 AS walk_endpoints,
+       NOT (path[2] = ANY (detour))                      AS detour_avoids_obstacle,
+       detour[array_length(detour, 1)] = a3              AS detour_reaches_dest,
+       a1 IN (SELECT v FROM h9_vision_cone(fox, 8, 15.0, 32.0, 3, ARRAY[a1]) v)
+                                                         AS blocker_face_visible,
+       NOT (a2 IN (SELECT v FROM h9_vision_cone(fox, 8, 15.0, 32.0, 3, ARRAY[a1]) v))
+                                                         AS behind_blocker_shadowed
+FROM w;
+
+-- Verbs reject E4H input (the marker guard).
+SELECT h9_aim(h9e_encode(ST_SetSRID(ST_MakePoint(35.02, -0.02), 4326), 6, 2), 8, 0.0);

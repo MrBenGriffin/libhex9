@@ -10,6 +10,116 @@ address.
 
 ---
 
+## [2.3.0] — unreleased
+
+### Added — universality made citable, and curve labels reach the wheel
+
+No address moves: everything here documents, checks, or exposes what the
+chain already does.
+
+- `docs/universality.md`: the normative statement of the bit-exact address
+  contract — previously enforced by, but scattered across, `h9_det_math.h`,
+  the build pins, `regime_pin`, `wheel_pin` and the CI comments. Defines the
+  conforming platform, blesses `test_data/regime_pin.tsv` as the conformance
+  interchange corpus (third parties conform by reproducing it bit-for-bit),
+  and states the regime-change procedure (major version = regime name).
+- Python `hex9.selftest()`: the installed wheel carries nine regime pins
+  (landmarks, poles, antimeridian, an octant seam, s005/s030 — the historic
+  FMA-flippers) and re-mints them on demand, so an embedder can prove *their*
+  environment conforms — a nonconforming rebuild fails at first check, not as
+  silent address drift in production. Gated per platform by `wheel_pin.py`.
+- Python `curve_label` / `curve_parse_label`: bindings over the existing
+  (and `test/curve.c`-pinned) `hex9_curve_label` / `hex9_curve_parse_label` —
+  the curve side of the label surface was C-only; hhg9 and the wheel now
+  agree. A full-depth curve label is the curve-uuid's hex spelling.
+- Python `label` and `curve_label` are overloaded for batch input: a (16,)
+  uuid returns one string, an (n,16) array returns a list of n — matching
+  the batch shape of `encode`/`curve` they are fed from.
+- Python `label()` now rejects curve-uuids (nibble 0 = 0xC) instead of
+  silently minting a plausible-looking but meaningless cell label from curve
+  ranks — the addresses-are-not-labels failure mode, made loud.
+- `wheel_pin.py` additionally pins curve uuids, curve labels, the parse
+  round-trip, and the marker guard on every wheel platform.
+- Python `hex9.verbs`: cell-first grid verbs over the validated neighbour
+  algebra — `aim` (bearing → neighbour, batchable), `walk_to` (A* shortest
+  hex path, obstacles impassable), `vision_cone` (k-ring cone of visibility
+  with great-circle occlusion), plus the bind helpers `encode_keys` /
+  `encode_keys_multi` / `centroids` and spherical helpers `gc_bearing` /
+  `gc_angle`. Ported from the hhg9 fox-and-rabbits PoC (`ex_0510`); bearings
+  are advisory FP that steer but never mint — every returned key comes from
+  the canonical encode/bin/neighbour chain, so the universality contract is
+  untouched. Python-only in this take; SQL/DuckDB verb twins are a later
+  take. Behavioural test `test/verbs.py` (ctest `verbs_py`) runs the field
+  across the equator octant seam.
+
+### Added — E4H: the aperture-4 structural tail (a new address surface)
+
+E4H extends a hex9 host bin at attach layer L with an `0xE` break marker,
+one HALF nibble (which state-cut trapezoid of the host hexagon), and up to
+`28−L` tail nibbles from `{0, 1..5}` descending the aperture-4 half-hex
+rep-4 carrier — exact nesting, straight edges, suffix-local truncation
+(truncation IS binning, unlike the a9 body), globally matched pairs (the
+two halves of every fine hexagon share their final digit). Digit semantics
+are the five-symbol enumeration proven minimal-and-necessary in hhg9
+(`docs/dggs-transport-tilings.md` §4b–§4d, CSP-verified). E4H uuids are
+ADDRESSES (ruling 2026-08-04), and no existing h9/curve address moves.
+
+- **The exact classifier.** The canonical E4H program is a frozen det-math
+  FP seed (project → host lattice-centre frame → seam unfold), ONE snap at
+  `2^-46`, then pure integer descent in ℤ[½, √3] (`core/h9_e4h.h`;
+  128-bit components, generator-proven ≤109 bits; sign decisions by exact
+  `A² vs 3B²` in 256-bit). Every half/child decision after the snap is
+  exact, so E4H addresses cannot drift with depth, platform, or optimiser —
+  the reference's open "all-depths stability" question is closed by
+  construction. Constants are frozen from the hhg9 reference by
+  `tools/gen_e4h_tables.py` (provenance commit recorded in the header).
+- C ABI: `hex9_e4h_encode` / `_decode` / `_partner` (+ `_sphere` and
+  `_many` twins), `_split`, `_bin` (tail truncation), `_depth`,
+  `hex9_is_e4h`, `_label` / `_parse_label`
+  (`<h9-label>E<half><digits>`). Full depth budget admitted from day one
+  (Ben's ruling 2026-08-05): layer 0 carries a 28-digit tail.
+- Marker guards: `0xE` cannot occur in any h9 or curve uuid, so
+  `hex9_is_e4h` is decisive and EVERY h9/curve uuid-consuming entry point
+  (decode, bin, parent/ancestor, curve family, k-rings, labels, cell_uv,
+  rings, adaptive…) now rejects E4H input rather than mis-reading a tail.
+- Conformance: `test_data/e4h_pin.tsv` — 504 hhg9-minted rows over all
+  octants, seams, cone-point rings and poles, depths probing far past the
+  CSP-verified range up to the full budget, knife-edge points margin-
+  filtered — reproduced byte-exactly by `test/e4h_parity.c`. Structural
+  laws (count law `2·4^d`, decode→encode identity, truncation=binning,
+  budget boundary, grammar rejects, matched-pair involution, guards) in
+  `test/e4h.c`. Universality doctrine addendum in `docs/universality.md`.
+- Python: `hex9.e4h_encode/e4h_decode/e4h_partner/e4h_split/e4h_bin/`
+  `e4h_depth/e4h_label/e4h_parse_label/is_e4h` (batch numpy shapes, sphere
+  kwarg, label batch overload). `wheel_pin.py` gains four E4H pins (to
+  depth 28) plus guard checks on every wheel platform; `hex9.selftest()`
+  now re-mints 10 pins (9 h9/curve + 1 full-budget E4H).
+
+### Added — take 2: the verbs and E4H reach SQL (PostGIS + DuckDB)
+
+- **C verbs ABI** — `hex9_aim`, `hex9_walk_to`, `hex9_vision_cone`
+  (hex9_c.h): the C twins of the python wheel's `hex9.verbs`, cell-first
+  (bin keys in and out, full-uuid re-derivation internal), bearings advisory
+  FP. A* matches the python module's heap order exactly (f, then g, then key
+  bytes); occlusion samples sight lines at a third of the local hex pitch.
+  Behavioural laws in `test/verbs_abi.c` (aim-inverse, cone ⊆ disk,
+  full-circle == disk, seam crossing, occlusion front-face, walk adjacency /
+  detour / sealed-destination, E4H guards).
+- **PostGIS `postgis_hex9` 2.3.0** (upgrade path 2.1.0 → 2.3.0; 2.2.x had
+  no SQL surface): `h9e_encode(/_sphere)`, `h9e_decode(/_sphere)`,
+  `h9e_partner(/_sphere)`, `h9e_bin`, `h9e_depth`, `h9_is_e4h`, `h9e_host`,
+  `h9e_label`, `h9e_parse_label`; verbs `h9_aim`, `h9_walk_to` (uuid[] path,
+  NULL when no path), `h9_vision_cone` (SETOF uuid). pg_regress rows pin the
+  Edinburgh E4H mint byte-exactly and assert the structural/verb laws; the
+  0xE guard errors are pinned as errors. `postgis_hex9--2.1.0.sql` is now a
+  frozen artifact; `hex9.sql.in` generates `--2.3.0.sql`.
+- **DuckDB `hex9` extension**: `h9e_encode/h9e_decode(_wkb)/h9e_partner/`
+  `h9e_bin/h9e_depth/h9_is_e4h/h9e_host/h9e_label/h9e_parse_label` +
+  `h9_aim`, `h9_walk_to(src, dest, layer[, obstacles])` → LIST(UUID) (NULL
+  when no path), `h9_vision_cone(key, layer, bearing, half, k[, obstacles])`
+  → LIST(UUID). sqllogictest `test/sql/h9_e4h.test` pins the same Edinburgh
+  mint and laws.
+
 ## [2.2.1] — 2026-07-28
 
 ### Fixed — packaging and metadata only; no code, no address moves

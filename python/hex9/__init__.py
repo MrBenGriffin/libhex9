@@ -17,6 +17,8 @@ dataset metadata; never mix projections within one dataset.
 """
 
 from ._core import *  # noqa: F401,F403 — the nanobind core IS the API
+from .selftest import selftest  # noqa: F401 — runtime universality pins
+from . import verbs  # noqa: F401 — cell-first grid verbs (aim / walk_to / vision_cone)
 
 from ._core import version as _version
 

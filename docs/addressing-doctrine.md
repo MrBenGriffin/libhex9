@@ -96,6 +96,25 @@ the canonical fold. New code touching cell identity must use one of these.
   lands ~10% of a circumradius off the geometric centroid — use the
   geometric centroid for display, the UUID for the key.
 
+## Marker registry (uuid kinds in one column)
+
+Three uuid kinds coexist byte-distinguishably; the sentinels cannot occur
+in each other's grammars, so every test below is positional/decisive:
+
+| kind        | marker                        | operations                     |
+|-------------|-------------------------------|--------------------------------|
+| h9 cell     | body nibbles ≤ 11, pad `0xF`  | the h9 surface                 |
+| curve       | nibble 0 = `0xC`              | `hex9_curve_*` (`hex9_is_curve`) |
+| E4H tail    | any nibble = `0xE`            | `hex9_e4h_*` (`hex9_is_e4h`)   |
+
+E4H tails are ADDRESSES (ruling 2026-08-04), not bins — the 2026-07-15
+bin framing is superseded. Truncating an E4H tail IS binning (suffix-local,
+exact) — the one place truncation is legitimate; the a9 body fossils
+(F1–F3) still apply unchanged to the host part. Every h9/curve entry point
+rejects `0xE`-marked input (the 2.3.0 marker-guard doctrine): tails have
+their own operations, and the h9 machinery must never silently mis-read
+one as a deep h9 body.
+
 ## Verification artefacts
 
 - `hex9:experimental/body_census.py` — body uniqueness, L0..L5, all cells.

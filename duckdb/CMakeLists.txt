@@ -31,6 +31,7 @@ endif()
 set(EXTENSION_SOURCES
     src/h9_extension.cpp
     src/h9_scalar.cpp
+    src/h9_e4h.cpp
     src/h9_curve.cpp
     src/h9_table.cpp
     "${HEX9_ROOT}/hex9_c.cpp"
