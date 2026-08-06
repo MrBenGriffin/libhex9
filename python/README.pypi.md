@@ -80,6 +80,9 @@ determinism contract as the published wheels.
 One line per release; the full story is the
 [CHANGELOG](https://github.com/MrBenGriffin/libhex9/blob/main/CHANGELOG.md).
 
+- **2.3.1** — wheel packaging fix: the cp312-abi3 wheels now genuinely
+  target the stable ABI (2.2.0–2.3.0's imported only on CPython 3.12);
+  no address moves.
 - **2.3.0** — E4H aperture-4 tails (exact classifier, addresses to depth
   28) with hexagon binning (`e4h_hex` — one canonical key per fine
   hexagon, 4^d per host); grid verbs `hex9.verbs` (aim / walk_to /

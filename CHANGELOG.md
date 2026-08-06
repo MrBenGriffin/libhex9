@@ -10,7 +10,10 @@ address.
 
 ---
 
-## [Unreleased]
+## [2.3.1] — 2026-08-06
+
+Packaging only — no address moves, no API changes, no SQL surface changes
+(the PostGIS extension and hex9-sys crate stay at their prior versions).
 
 ### Fixed — cp312-abi3 wheels were not actually abi3
 

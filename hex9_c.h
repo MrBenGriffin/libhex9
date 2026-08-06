@@ -60,7 +60,7 @@ extern "C" {
  * invisible in the data. Consumers that persist addresses SHOULD refuse to
  * start on a mismatch: see postgis_hex9's _PG_init for the pattern.
  */
-#define HEX9_VERSION       "2.3.0"
+#define HEX9_VERSION       "2.3.1"
 #define HEX9_VERSION_MAJOR 2
 #define HEX9_VERSION_MINOR 3
 #define HEX9_VERSION_PATCH 0

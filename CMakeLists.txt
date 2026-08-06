@@ -20,7 +20,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
       "Minimum macOS version libhex9 targets (match your PostgreSQL's)")
 endif()
 
-project(libhex9 VERSION 2.3.0 LANGUAGES CXX C)
+project(libhex9 VERSION 2.3.1 LANGUAGES CXX C)
 
 # ── Version consistency ─────────────────────────────────────────────────────
 # HEX9_VERSION in the public header is hand-maintained (the header is shipped
