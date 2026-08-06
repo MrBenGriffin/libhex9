@@ -39,6 +39,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pypa/cibuildwheel@v3.2
+      # Tag honesty: abi3-tagged wheels must contain a genuinely abi3
+      # extension (2.2.0-2.3.0 shipped cp312-abi3 wheels with cpython-312
+      # .so files — importable only on 3.12; dggs_compare#35).
+      - run: python test/abi3_check.py wheelhouse
+        shell: bash
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}

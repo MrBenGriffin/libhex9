@@ -10,6 +10,31 @@ address.
 
 ---
 
+## [Unreleased]
+
+### Fixed — cp312-abi3 wheels were not actually abi3
+
+The 2.2.0–2.3.0 `cp312-abi3` wheels contained a version-specific
+`_core.cpython-312-*` extension: they installed on every CPython ≥ 3.12 and
+then failed to import (`ModuleNotFoundError: hex9._core`) on all but 3.12.
+Found by dggs_compare CI on Python 3.13
+([ajfriend/dggs_compare#35](https://github.com/ajfriend/dggs_compare/pull/35)).
+
+Root cause: `find_package(Python …)` never requested `Development.SABIModule`,
+so nanobind *silently* ignored `STABLE_ABI` and built a version-specific
+module, while the `wheel.py-api = "cp312"` override tagged the wheel abi3
+regardless. No address or API change — the extension code was always
+limited-API-clean; only the build/tag plumbing was wrong.
+
+- CMake now passes `${SKBUILD_SABI_COMPONENT}` to `find_package(Python)` and
+  hard-fails (`FATAL_ERROR`) if an abi3 wheel is requested but
+  `Python::SABIModule` is missing — the silent fallback is now impossible.
+- New gate `test/abi3_check.py`, wired into `wheels.yml`: any abi3-tagged
+  wheel whose bundled extension is version-specific fails CI. It rejects the
+  published 2.3.0 wheels and passes the fixed ones.
+- Verified: the repaired `cp312-abi3` wheel ships `_core.abi3.so`, imports on
+  CPython 3.12 and 3.14, and passes `wheel_pin.py` + `verbs.py` on both.
+
 ## [2.3.0] — 2026-08-05
 
 ### Added — universality made citable, and curve labels reach the wheel

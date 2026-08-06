@@ -395,7 +395,12 @@ target_link_libraries(newton_aj_probe PRIVATE hex9)
 # ── Python module (optional: built only when nanobind is available) ──────────
 option(HEX9_PYTHON "Build the nanobind Python module" ON)
 if(HEX9_PYTHON)
-  find_package(Python 3.9 COMPONENTS Interpreter Development.Module QUIET)
+  # SKBUILD_SABI_COMPONENT is "Development.SABIModule" when scikit-build-core
+  # is building an abi3 wheel (wheel.py-api in pyproject.toml), else empty.
+  # Without that component nanobind SILENTLY ignores STABLE_ABI and emits a
+  # version-specific extension — which the wheel would then mistag as abi3.
+  find_package(Python 3.9
+    COMPONENTS Interpreter Development.Module ${SKBUILD_SABI_COMPONENT} QUIET)
   if(Python_FOUND)
     execute_process(
       COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
@@ -409,6 +414,15 @@ if(HEX9_PYTHON)
   if(nanobind_FOUND)
     if(HEX9_WHEEL)
       # Wheel target: import name hex9._core, static core, self-contained.
+      # If this wheel is tagged abi3, the extension MUST genuinely be abi3:
+      # a version-specific .so under an abi3 tag installs on every Python
+      # >= 3.12 and then fails to import on all but one of them.
+      if(SKBUILD_SABI_COMPONENT AND NOT TARGET Python::SABIModule)
+        message(FATAL_ERROR "libhex9: abi3 wheel requested "
+          "(SKBUILD_SABI_COMPONENT=${SKBUILD_SABI_COMPONENT}) but "
+          "Python::SABIModule was not found; refusing to build a mistagged "
+          "wheel")
+      endif()
       nanobind_add_module(_core STABLE_ABI python/hex9_ext.cpp)
       target_compile_definitions(_core PRIVATE HEX9_PY_MODULE=_core)
       if(MSVC)

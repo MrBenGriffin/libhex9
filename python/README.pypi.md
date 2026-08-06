@@ -60,6 +60,21 @@ county-sized, layer-14 city-block-sized). Bins derived from a full address
 are exact prefixes of the hierarchy — aggregation is a byte operation, not
 a spatial query.
 
+## Wheels and platforms
+
+Tested binary wheels ship for Linux (x86_64, aarch64), macOS (Apple
+Silicon) and Windows (amd64), CPython 3.10+ — every wheel passes the
+frozen golden tests on its own platform before it can publish.
+
+Anywhere without a wheel — Intel Macs are the notable case — `pip install
+hex9` builds from source automatically. The build is deliberately
+self-contained: no Homebrew or system libraries are required, and all
+build tooling comes from PyPI; the only prerequisite is a C++ compiler
+(on macOS, the Xcode Command Line Tools: `xcode-select --install`).
+Afterwards, `hex9.selftest()` re-mints the golden addresses in *your*
+environment — proof that a self-built install honours the same
+determinism contract as the published wheels.
+
 ## History
 
 One line per release; the full story is the
